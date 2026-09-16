@@ -1,0 +1,48 @@
+# STRUCTURA FACTOR Launchers - .gitignore
+# Zapobiega commitowaniu sekretow i plikow tymczasowych
+
+# Sekrety - NIGDY nie commituj!
+.env
+.env.*
+*.key
+*.pem
+*.pfx
+*.p12
+id_ed25519
+id_rsa
+id_ecdsa
+*_deploy_key
+deploy_key*
+
+# Media (duze pliki - pobierane lub z OneDrive)
+*.iso
+*.vdi
+*.vmdk
+*.vhd
+*.vhdx
+*.exe
+*.msi
+
+# Logi i pliki tymczasowe
+*.log
+*.tmp
+*.partial
+setup.log*
+setup.log.*.bak
+
+# OS files
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# PowerShell
+*.psd1
+*.psm1
+# (allow our scripts - they are .ps1 not .psd1/.psm1)

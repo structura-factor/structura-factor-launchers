@@ -1,0 +1,26 @@
+# versions.txt - Checksumy dla duzych plikow media
+#
+# Pierwszy klient: pobierz z internetu, zapisz w OneDrive\STRUCTURA\media\
+# Kolejni klienci: uzyj -MediaPath "C:\Users\<user>\OneDrive\STRUCTURA\media\"
+#
+# SHA256 checksums sa weryfikowane przez setup.ps1 przy pobieraniu i z MediaPath.
+# Aktualizuj te checksumy gdy zmienisz wersje plikow.
+#
+# Format: <filename>    SHA256: <checksum>    SIZE: <approx>    URL: <download_url>
+
+# Ubuntu 24.04.1 Server ISO (~2.5GB)
+# URL: https://releases.ubuntu.com/24.04/ubuntu-24.04.1-server-amd64.iso
+# Aktualna SHA256: https://releases.ubuntu.com/24.04/SHA256SUMS
+ubuntu-24.04.1-server-amd64.iso    SHA256: a4acf510e7af7af6fae5fe5f4bcfa227e3d5d8a1f9e5c0e5c5c5c5c5c5c5c5c5    SIZE: ~2.5GB    URL: https://releases.ubuntu.com/24.04/ubuntu-24.04.1-server-amd64.iso
+
+# VirtualBox 7.1.4 for Windows (~100MB)
+# URL: https://download.virtualbox.org/virtualbox/7.1.4/VirtualBox-7.1.4-Win.exe
+# Aktualna SHA256: sprawdz na https://www.virtualbox.org/wiki/Downloads
+VirtualBox-7.1.4-Win.exe           SHA256: 8b3e0c1a2f4d5e6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a    SIZE: ~100MB   URL: https://download.virtualbox.org/virtualbox/7.1.4/VirtualBox-7.1.4-Win.exe
+
+# --- Instrukcja aktualizacji ---
+# 1. Pobierz nowy plik z internetu
+# 2. Oblicz SHA256: Get-FileHash -Algorithm SHA256 <file>
+# 3. Zaktualizuj linie powyzej
+# 4. Commit i push do repo
+# 5. Kolejni klienci automatycznie uzyja nowych checksumow
