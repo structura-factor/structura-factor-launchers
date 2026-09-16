@@ -23,8 +23,7 @@ param(
     [string]$ClientRepo = "structura-factor/structura-clients",
 
     [Parameter(Mandatory = $false)]
-    [switch]$Quiet,
-
+    [switch]$Quiet
     # -Verbose provided by CmdletBinding automatically
 )
 
