@@ -113,7 +113,7 @@ function Write-Banner {
         $centerSub = $Subtitle.PadLeft([math]::Floor(($width - 2 + $Subtitle.Length) / 2)).PadRight($width - 2)
         Write-Host "|$centerSub|" -ForegroundColor Cyan
     }
-    Write-Host "|$("" * ($width - 2))|" -ForegroundColor Cyan
+    Write-Host "|$(" " * ($width - 2))|" -ForegroundColor Cyan
 
     if ($ClientName) {
         $clientLine = "  Klient: $ClientName".PadRight($width - 2)
@@ -1135,7 +1135,7 @@ function Invoke-PostSetup {
     $cronCmd = @"
         # Add pg_dump cron job
         CRON_LINE="45 1 * * * docker exec structura-hindsight /pgdump/pgdump.sh >> /opt/structura/appdata/hindsight/pgdump/cron.log 2>&1"
-        (crontab -l 2>/dev/null | grep -v "pgdump.sh"; echo "$CRON_LINE") | crontab -
+        (crontab -l 2>/dev/null | grep -v "pgdump.sh"; echo "`$CRON_LINE") | crontab -
         echo "pg_dump cron configured"
 "@
     $cronResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $cronCmd 2>&1
