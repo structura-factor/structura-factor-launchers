@@ -189,7 +189,7 @@ if (Test-Path $tempClone) { Remove-Item $tempClone -Recurse -Force }
 $gitUrl = "git@github.com:$ClientRepo.git"
 
 # Setup SSH for git with deploy key
-$env:GIT_SSH_COMMAND = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -i `"$DeployKeyPath`" -o IdentitiesOnly=yes"
+$env:GIT_SSH_COMMAND = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -i $DeployKeyPath -o IdentitiesOnly=yes"
 
 # Temporarily relax error preference - git writes to stderr which triggers Stop
 $prevEAP = $ErrorActionPreference
