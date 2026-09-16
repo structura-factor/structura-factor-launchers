@@ -17,7 +17,7 @@ param(
     [string]$MediaPath,
 
     [Parameter(Mandatory = $false)]
-    [string]$LauncherRepo = "structura-factor/structura-factor-launchers",
+    [string]$LauncherRepo = "structura-factor/structura-factor-launchers@317f20b6f9eacef80006cefc32eab4fc93b49486",
 
     [Parameter(Mandatory = $false)]
     [string]$ClientRepo = "structura-factor/structura-clients",
@@ -225,7 +225,7 @@ if (-not $launcherName) {
 Write-StructuraLog "Launcher: $launcherName"
 
 # Step 4: Fetch setup.bat from launcher repo
-$setupBatUrl = "$GITHUB_RAW_BASE/$LauncherRepo@main/$launcherName/setup.bat"
+$setupBatUrl = "$GITHUB_RAW_BASE/$LauncherRepo/$launcherName/setup.bat"
 $setupBatPath = [System.IO.Path]::GetTempFileName()
 $downloaded = Invoke-SafeDownload -Url $setupBatUrl -Destination $setupBatPath -TimeoutSec $DOWNLOAD_TIMEOUT_SEC
 
@@ -235,7 +235,7 @@ if (-not $downloaded) {
 }
 
 # Step 5: Fetch setup.ps1 from launcher repo
-$setupPs1Url = "$GITHUB_RAW_BASE/$LauncherRepo@main/$launcherName/setup.ps1"
+$setupPs1Url = "$GITHUB_RAW_BASE/$LauncherRepo/$launcherName/setup.ps1"
 $setupPs1Path = [System.IO.Path]::GetTempFileName()
 $downloaded = Invoke-SafeDownload -Url $setupPs1Url -Destination $setupPs1Path -TimeoutSec $DOWNLOAD_TIMEOUT_SEC
 
@@ -245,7 +245,7 @@ if (-not $downloaded) {
 }
 
 # Step 6: Fetch ubuntu-unattend.xml from launcher repo
-$unattendUrl = "$GITHUB_RAW_BASE/$LauncherRepo@main/$launcherName/ubuntu-unattend.xml"
+$unattendUrl = "$GITHUB_RAW_BASE/$LauncherRepo/$launcherName/ubuntu-unattend.xml"
 $unattendPath = [System.IO.Path]::GetTempFileName()
 $downloaded = Invoke-SafeDownload -Url $unattendUrl -Destination $unattendPath -TimeoutSec $DOWNLOAD_TIMEOUT_SEC
 
