@@ -62,29 +62,7 @@ Write-Host ""
 W-Log "=== Install v1.2 started ==="
 W-Log "VM_RAM=$VM_RAM VM_CPU=$VM_CPU VM_DISK=$VM_DISK LUKS=$EnableLUKS"
 
-# --- Deploy key ---
-Write-Host "  > Szukanie deploy key w klucze\..." -ForegroundColor Cyan
-$deployKeyPath = $null
-$keyFiles = Get-ChildItem -Path $KEYS_DIR -File -ErrorAction SilentlyContinue | Where-Object {
-    $_.Name -notmatch '\.pub$' -and $_.Name -notmatch '\.txt$' -and $_.Name -notmatch '\.md$'
-}
-if ($keyFiles) {
-    $deployKeyPath = $keyFiles[0].FullName
-    Write-Host "  v Deploy key: klucze\$($keyFiles[0].Name)" -ForegroundColor Green
-} else {
-    Write-Host "  ! Nie znaleziono deploy key w $KEYS_DIR\" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  Wklej plik klucza prywatnego SSH do:" -ForegroundColor Yellow
-    Write-Host "    $KEYS_DIR\" -ForegroundColor White
-    Write-Host ""
-    Write-Host "  Klucz to plik bez rozszerzenia (.pub to klucz publiczny)." -ForegroundColor DarkGray
-    Write-Host "  Nastepnie uruchom skrypt ponownie." -ForegroundColor Yellow
-    Write-Host ""
-    exit 1
-}
-W-Log "DeployKey: $deployKeyPath"
-
-# --- Admin check ---
+# --- Admin check: zanim zapyta o klucz ---
 Write-Host "  > Sprawdzanie uprawnien administratora..." -ForegroundColor Cyan
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
@@ -94,6 +72,94 @@ if (-not $isAdmin) {
 }
 Write-Host "  v Admin: tak" -ForegroundColor Green
 W-Log "Admin: OK"
+
+# --- Deploy key: zapytaj zanim cokolwiek pobierze ---
+Write-Host ""
+Write-Host "  === Klucz deploy SSH ===" -ForegroundColor Cyan
+Write-Host "  Do instalacji potrzebny jest klucz prywatny SSH (deploy key)." -ForegroundColor White
+Write-Host "  Plik klucza zostal przekazany osobno (email, pendrive, itp.)." -ForegroundColor White
+Write-Host ""
+Write-Host "  Opcje:" -ForegroundColor White
+Write-Host "    1. Wskaz sciezke do pliku klucza (np. C:\Users\ja\Desktop\deploy_key)" -ForegroundColor DarkGray
+Write-Host "    2. Wklej klucz do folderu $KEYS_DIR i nacisnij Enter" -ForegroundColor DarkGray
+Write-Host "    3. Wklej zawartosc klucza tutaj (skrypt zapisze go automatycznie)" -ForegroundColor DarkGray
+Write-Host ""
+$deployKeyPath = $null
+
+# Najpierw sprawdz czy juz cos jest w klucze\
+$keyFiles = Get-ChildItem -Path $KEYS_DIR -File -ErrorAction SilentlyContinue | Where-Object {
+    $_.Name -notmatch '\.pub$' -and $_.Name -notmatch '\.txt$' -and $_.Name -notmatch '\.md$'
+}
+if ($keyFiles) {
+    $deployKeyPath = $keyFiles[0].FullName
+    Write-Host "  v Znaleziono klucz w folderze: klucze\$($keyFiles[0].Name)" -ForegroundColor Green
+} else {
+    $keyChoice = Read-Host "  Wybierz opcje (1/2/3)"
+    switch ($keyChoice) {
+        "1" {
+            $keyPathInput = Read-Host "  Sciezka do pliku klucza"
+            if ($keyPathInput -and $keyPathInput.Trim() -ne "") {
+                $keyPathInput = $keyPathInput.Trim().Trim('"').Trim("'")
+                if (Test-Path $keyPathInput) {
+                    $deployKeyPath = $keyPathInput
+                    Write-Host "  v Klucz: $deployKeyPath" -ForegroundColor Green
+                } else {
+                    Write-Host "  x Plik nie istnieje: $keyPathInput" -ForegroundColor Red
+                    exit 1
+                }
+            } else {
+                Write-Host "  x Nie podano sciezki." -ForegroundColor Red
+                exit 1
+            }
+        }
+        "2" {
+            Write-Host "  Wklej plik do $KEYS_DIR i nacisnij Enter..." -ForegroundColor Yellow
+            Read-Host "  Gotowe? (Enter)"
+            $keyFiles = Get-ChildItem -Path $KEYS_DIR -File -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -notmatch '\.pub$' -and $_.Name -notmatch '\.txt$' -and $_.Name -notmatch '\.md$'
+            }
+            if ($keyFiles) {
+                $deployKeyPath = $keyFiles[0].FullName
+                Write-Host "  v Klucz: klucze\$($keyFiles[0].Name)" -ForegroundColor Green
+            } else {
+                Write-Host "  x Nadal nie znaleziono klucza w $KEYS_DIR" -ForegroundColor Red
+                exit 1
+            }
+        }
+        "3" {
+            Write-Host "  Wklej zawartosc klucza (rozpoczyna sie od -----BEGIN...):" -ForegroundColor Yellow
+            Write-Host "  Zakoncz pusta linia i Enter:" -ForegroundColor DarkGray
+            $keyLines = @()
+            while ($true) {
+                $line = Read-Host
+                if ($line -eq "") { break }
+                $keyLines += $line
+            }
+            if ($keyLines.Count -gt 0) {
+                $keyContent = $keyLines -join "`n"
+                $deployKeyPath = "$KEYS_DIR\deploy_key"
+                $keyContent | Out-File -FilePath $deployKeyPath -Encoding ASCII -NoNewline
+                Write-Host "  v Klucz zapisany: $deployKeyPath" -ForegroundColor Green
+            } else {
+                Write-Host "  x Pusty klucz." -ForegroundColor Red
+                exit 1
+            }
+        }
+        default {
+            Write-Host "  x Niepoprawny wybor." -ForegroundColor Red
+            exit 1
+        }
+    }
+}
+
+# Weryfikuj zawartosc klucza
+$keyRaw = Get-Content $deployKeyPath -Raw
+if ($keyRaw -notmatch 'BEGIN OPENSSH PRIVATE KEY' -and $keyRaw -notmatch 'BEGIN PRIVATE KEY') {
+    Write-Host "  ! Plik nie wyglada na klucz prywatny SSH. Kontynuje..." -ForegroundColor Yellow
+} else {
+    Write-Host "  v Klucz prywatny SSH: zweryfikowany" -ForegroundColor Green
+}
+W-Log "DeployKey: $deployKeyPath"
 
 # --- RAM ---
 Write-Host "  > Sprawdzanie RAM..." -ForegroundColor Cyan
