@@ -189,18 +189,29 @@ if (Test-Path $tempClone) { Remove-Item $tempClone -Recurse -Force }
 $gitUrl = "git@github.com:$ClientRepo.git"
 
 # Setup SSH for git with deploy key
-$env:GIT_SSH_COMMAND = "ssh -o StrictHostKeyChecking=no -i `"$DeployKeyPath`" -o IdentitiesOnly=yes"
+$env:GIT_SSH_COMMAND = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -i `"$DeployKeyPath`" -o IdentitiesOnly=yes"
+
+# Temporarily relax error preference - git writes to stderr which triggers Stop
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 
 Write-StructuraLog "Cloning $gitUrl (shallow)..."
-$cloneResult = git clone --depth 1 $gitUrl $tempClone 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-StructuraLog "git clone failed: $cloneResult" -Level "ERROR"
+$cloneOutput = & git clone --depth 1 $gitUrl $tempClone 2>&1
+$cloneExit = $LASTEXITCODE
+
+$ErrorActionPreference = $prevEAP
+
+if ($cloneExit -ne 0) {
+    Write-StructuraLog "git clone failed (exit $cloneExit): $cloneOutput" -Level "ERROR"
     Write-Host ""
     Write-Host "  Nie udalo sie sklonowac repo: $ClientRepo" -ForegroundColor Yellow
     Write-Host "  Sprawdz czy deploy key jest poprawny." -ForegroundColor Yellow
     Write-Host "  Klucz: $DeployKeyPath" -ForegroundColor DarkGray
+    Write-Host "  Blad: $cloneOutput" -ForegroundColor DarkGray
     exit 1
 }
+
+Write-StructuraLog "git clone successful"
 
 $bootstrapYamlPath = "$tempClone\bootstrap.yaml"
 if (-not (Test-Path $bootstrapYamlPath)) {
