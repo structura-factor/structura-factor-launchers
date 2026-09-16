@@ -143,7 +143,8 @@ function Write-Banner {
     $subtitle = "Personal Assistant prawniczy"
     $centerSub = $subtitle.PadLeft([math]::Floor(($width - 2 + $subtitle.Length) / 2)).PadRight($width - 2)
     Write-Host "|$centerSub|" -ForegroundColor Cyan
-    Write-Host "|$("" * ($width - 2))|" -ForegroundColor Cyan
+    $emptyLine = " " * ($width - 2)
+    Write-Host "|$emptyLine|" -ForegroundColor Cyan
     $clientLine = "  Klient: Sawaryn i Partnerzy".PadRight($width - 2)
     Write-Host "|$clientLine|" -ForegroundColor White
     $dirLine = "  Folder: $BASE_DIR".PadRight($width - 2)
