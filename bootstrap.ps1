@@ -35,7 +35,7 @@ $ErrorActionPreference = 'Stop'
 
 $STRUCTURA_LOG_DIR = "C:\structura"
 $STRUCTURA_LOG_FILE = "$STRUCTURA_LOG_DIR\setup.log"
-$GITHUB_RAW_BASE = "https://raw.githubusercontent.com"
+$GITHUB_RAW_BASE = "https://cdn.jsdelivr.net/gh"
 $DOWNLOAD_TIMEOUT_SEC = 30
 $MAX_RETRIES = 3
 
@@ -183,7 +183,7 @@ if ($MediaPath) { Write-StructuraLog "Media path: $MediaPath" }
 
 # Step 1: Fetch bootstrap.yaml from client repo
 Write-StructuraLog "Fetching bootstrap.yaml from $ClientRepo/$Client/..."
-$bootstrapUrl = "$GITHUB_RAW_BASE/$ClientRepo/main/$Client/bootstrap.yaml"
+$bootstrapUrl = "$GITHUB_RAW_BASE/$ClientRepo@main/$Client/bootstrap.yaml"
 
 $bootstrapYamlPath = [System.IO.Path]::GetTempFileName()
 $downloaded = Invoke-SafeDownload -Url $bootstrapUrl -Destination $bootstrapYamlPath -TimeoutSec $DOWNLOAD_TIMEOUT_SEC
@@ -225,7 +225,7 @@ if (-not $launcherName) {
 Write-StructuraLog "Launcher: $launcherName"
 
 # Step 4: Fetch setup.bat from launcher repo
-$setupBatUrl = "$GITHUB_RAW_BASE/$LauncherRepo/main/$launcherName/setup.bat"
+$setupBatUrl = "$GITHUB_RAW_BASE/$LauncherRepo@main/$launcherName/setup.bat"
 $setupBatPath = [System.IO.Path]::GetTempFileName()
 $downloaded = Invoke-SafeDownload -Url $setupBatUrl -Destination $setupBatPath -TimeoutSec $DOWNLOAD_TIMEOUT_SEC
 
@@ -235,7 +235,7 @@ if (-not $downloaded) {
 }
 
 # Step 5: Fetch setup.ps1 from launcher repo
-$setupPs1Url = "$GITHUB_RAW_BASE/$LauncherRepo/main/$launcherName/setup.ps1"
+$setupPs1Url = "$GITHUB_RAW_BASE/$LauncherRepo@main/$launcherName/setup.ps1"
 $setupPs1Path = [System.IO.Path]::GetTempFileName()
 $downloaded = Invoke-SafeDownload -Url $setupPs1Url -Destination $setupPs1Path -TimeoutSec $DOWNLOAD_TIMEOUT_SEC
 
@@ -245,7 +245,7 @@ if (-not $downloaded) {
 }
 
 # Step 6: Fetch ubuntu-unattend.xml from launcher repo
-$unattendUrl = "$GITHUB_RAW_BASE/$LauncherRepo/main/$launcherName/ubuntu-unattend.xml"
+$unattendUrl = "$GITHUB_RAW_BASE/$LauncherRepo@main/$launcherName/ubuntu-unattend.xml"
 $unattendPath = [System.IO.Path]::GetTempFileName()
 $downloaded = Invoke-SafeDownload -Url $unattendUrl -Destination $unattendPath -TimeoutSec $DOWNLOAD_TIMEOUT_SEC
 
