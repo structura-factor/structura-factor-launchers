@@ -21,7 +21,7 @@ $ErrorActionPreference = 'Stop'
 # --- Stale ---
 $CLIENT = "sawaryn"
 $LAUNCHER_REPO = "structura-factor/structura-factor-launchers"
-$BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@b0ef277a054ce043cf266477db2d8c11ed3fd47e/bootstrap.ps1"
+$BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@317f20b6f9eacef80006cefc32eab4fc93b49486/bootstrap.ps1"
 $BASE_DIR = "C:\STRUCTURA"
 $KEYS_DIR = "$BASE_DIR\klucze"
 $MEDIA_DIR = "$BASE_DIR\media"
@@ -282,19 +282,23 @@ if ($MediaCachePath) { Write-Host "  Cache:   $MediaCachePath" -ForegroundColor 
 if ($EnableLUKS) { Write-Host "  LUKS:    wlaczony" -ForegroundColor White }
 Write-Host ""
 
-$ba = @("-Client", $CLIENT, "-DeployKeyPath", $deployKeyPath, "-MediaPath", $MEDIA_DIR)
+$ba = @("-Client", $CLIENT, "-DeployKeyPath", "'$deployKeyPath'", "-MediaPath", "'$MEDIA_DIR'")
 if ($VM_RAM -ne 4096) { $ba += @("-VM_RAM", $VM_RAM) }
 if ($VM_CPU -ne 2) { $ba += @("-VM_CPU", $VM_CPU) }
 if ($VM_DISK -ne 40960) { $ba += @("-VM_DISK", $VM_DISK) }
-if ($EnableLUKS) { $ba += @("-EnableLUKS", "-LUKSPassword", $LUKSPassword) }
+if ($EnableLUKS) { $ba += @("-EnableLUKS", "-LUKSPassword", "'$LUKSPassword'") }
 # Nie przekazuj -Quiet/-Verbose - konflikt z CmdletBinding w bootstrap.ps1
 
 W-Log "bootstrap args: $($ba -join ' ')"
 Unblock-File -Path $bp -ErrorAction SilentlyContinue
 
+# Build command string and execute via iex - more reliable than splatting with & operator
+$cmdStr = "& '$bp' " + ($ba -join ' ')
+W-Log "Command: $cmdStr"
+
 $ec = 0
 try {
-    & $bp @ba
+    Invoke-Expression $cmdStr
     $ec = $LASTEXITCODE
 } catch {
     Write-Host "  x bootstrap.ps1 blad: $_" -ForegroundColor Red
