@@ -183,7 +183,7 @@ if ($MediaPath) { Write-StructuraLog "Media path: $MediaPath" }
 
 # Step 1: Fetch bootstrap.yaml from client repo
 Write-StructuraLog "Fetching bootstrap.yaml from $ClientRepo/$Client/..."
-$bootstrapUrl = "$GITHUB_RAW_BASE/$ClientRepo@main/$Client/bootstrap.yaml"
+$bootstrapUrl = "$GITHUB_RAW_BASE/$LauncherRepo/clients/$Client/bootstrap.yaml"
 
 $bootstrapYamlPath = [System.IO.Path]::GetTempFileName()
 $downloaded = Invoke-SafeDownload -Url $bootstrapUrl -Destination $bootstrapYamlPath -TimeoutSec $DOWNLOAD_TIMEOUT_SEC
