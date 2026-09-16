@@ -17,10 +17,10 @@ param(
     [string]$MediaPath,
 
     [Parameter(Mandatory = $false)]
-    [string]$LauncherRepo = "ciemek/structura-factor-launchers",
+    [string]$LauncherRepo = "structura-factor/structura-factor-launchers",
 
     [Parameter(Mandatory = $false)]
-    [string]$ClientRepo = "ciemek/structura-clients",
+    [string]$ClientRepo = "structura-factor/structura-clients",
 
     [Parameter(Mandatory = $false)]
     [switch]$Quiet,
