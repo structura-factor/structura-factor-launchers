@@ -184,7 +184,9 @@ if ($MediaPath) { Write-StructuraLog "Media path: $MediaPath" }
 # Step 1: Fetch bootstrap.yaml from client repo via git (private repo)
 Write-StructuraLog "Fetching bootstrap.yaml from $ClientRepo (private, via git)..."
 
-$tempClone = "$env:TEMP\structura-bootstrap-clone"
+$tempClone = "C:\STRUCTURA\temp\bootstrap-clone"
+$tempParent = Split-Path $tempClone -Parent
+if (-not (Test-Path $tempParent)) { New-Item -ItemType Directory -Path $tempParent -Force | Out-Null }
 if (Test-Path $tempClone) { Remove-Item $tempClone -Recurse -Force }
 $gitUrl = "git@github.com:$ClientRepo.git"
 
