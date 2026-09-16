@@ -20,7 +20,7 @@ param(
     [string]$LauncherRepo = "structura-factor/structura-factor-launchers@317f20b6f9eacef80006cefc32eab4fc93b49486",
 
     [Parameter(Mandatory = $false)]
-    [string]$ClientRepo = "structura-factor/structura-clients",
+    [string]$ClientRepo = "structura-factor/structura-clients-sawaryn",
 
     [Parameter(Mandatory = $false)]
     [switch]$Quiet
@@ -181,20 +181,36 @@ Write-StructuraLog "Client repo: $ClientRepo"
 if ($DeployKeyPath) { Write-StructuraLog "Deploy key: $DeployKeyPath" }
 if ($MediaPath) { Write-StructuraLog "Media path: $MediaPath" }
 
-# Step 1: Fetch bootstrap.yaml from client repo
-Write-StructuraLog "Fetching bootstrap.yaml from $ClientRepo/$Client/..."
-$bootstrapUrl = "$GITHUB_RAW_BASE/$LauncherRepo/clients/$Client/bootstrap.yaml"
+# Step 1: Fetch bootstrap.yaml from client repo via git (private repo)
+Write-StructuraLog "Fetching bootstrap.yaml from $ClientRepo (private, via git)..."
 
-$bootstrapYamlPath = [System.IO.Path]::GetTempFileName()
-$downloaded = Invoke-SafeDownload -Url $bootstrapUrl -Destination $bootstrapYamlPath -TimeoutSec $DOWNLOAD_TIMEOUT_SEC
+$tempClone = "$env:TEMP\structura-bootstrap-clone"
+if (Test-Path $tempClone) { Remove-Item $tempClone -Recurse -Force }
+$gitUrl = "git@github.com:$ClientRepo.git"
 
-if (-not $downloaded) {
-    Write-StructuraLog "Failed to fetch bootstrap.yaml. Check client repo and network." -Level "ERROR"
+# Setup SSH for git with deploy key
+$env:GIT_SSH_COMMAND = "ssh -o StrictHostKeyChecking=no -i `"$DeployKeyPath`" -o IdentitiesOnly=yes"
+
+Write-StructuraLog "Cloning $gitUrl (shallow)..."
+$cloneResult = git clone --depth 1 $gitUrl $tempClone 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-StructuraLog "git clone failed: $cloneResult" -Level "ERROR"
     Write-Host ""
-    Write-Host "  Potrzebujesz dostepu do repo: $ClientRepo" -ForegroundColor Yellow
-    Write-Host "  Sprawdz czy deploy key ma uprawnienia do: $ClientRepo" -ForegroundColor Yellow
+    Write-Host "  Nie udalo sie sklonowac repo: $ClientRepo" -ForegroundColor Yellow
+    Write-Host "  Sprawdz czy deploy key jest poprawny." -ForegroundColor Yellow
+    Write-Host "  Klucz: $DeployKeyPath" -ForegroundColor DarkGray
     exit 1
 }
+
+$bootstrapYamlPath = "$tempClone\bootstrap.yaml"
+if (-not (Test-Path $bootstrapYamlPath)) {
+    Write-StructuraLog "bootstrap.yaml not found in repo root" -Level "ERROR"
+    Write-Host "  Plik bootstrap.yaml nie znaleziony w repo: $ClientRepo" -ForegroundColor Yellow
+    exit 1
+}
+
+Write-StructuraLog "bootstrap.yaml found: $bootstrapYamlPath"
+Remove-Item env:\GIT_SSH_COMMAND -ErrorAction SilentlyContinue
 
 # Step 2: Validate bootstrap.yaml schema
 $bootstrapYaml = Get-Content $bootstrapYamlPath -Raw
@@ -296,7 +312,7 @@ if ($exitCode -ne 0) {
 Write-StructuraLog "=== Bootstrap complete ==="
 
 # Cleanup temp files
-Remove-Item $bootstrapYamlPath -Force -ErrorAction SilentlyContinue
+Remove-Item $tempClone -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $setupBatPath -Force -ErrorAction SilentlyContinue
 Remove-Item $setupPs1Path -Force -ErrorAction SilentlyContinue
 Remove-Item $unattendPath -Force -ErrorAction SilentlyContinue
