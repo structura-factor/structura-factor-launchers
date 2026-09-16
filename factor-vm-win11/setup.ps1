@@ -1102,7 +1102,7 @@ function Invoke-HindsightAndConfig {
     if ($Verbose) { Write-Host $initResult -ForegroundColor DarkGray }
 
     if ($initResult -match 'HINDSIGHT_INIT_DONE') {
-        Write-Check "Hindsight banks initialized (7 banks)"
+        Write-Check "Hindsight banks initialized (2 banks)"
     } else {
         Write-Check "Hindsight init: check logs" -Warn
     }
@@ -1384,7 +1384,7 @@ function Show-Summary {
         "  Admin (NPM): ssh -L 81:localhost:81 structura@$VmIp -p 2222"
         "  SMB share:   \\STRUCTURA\ai-workspace"
         "  Backup:      4 jobs scheduled (Duplicati)"
-        "  Hindsight:   7 banks initialized"
+        "  Hindsight:   2 banks initialized"
         ""
         "  Log:         $LOG_FILE"
         "  Next step:   Configure Telegram bot (see factor-vm-win11/README.md)"
