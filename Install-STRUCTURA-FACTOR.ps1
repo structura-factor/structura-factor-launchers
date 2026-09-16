@@ -21,7 +21,7 @@ $ErrorActionPreference = 'Stop'
 # --- Stale ---
 $CLIENT = "sawaryn"
 $LAUNCHER_REPO = "structura-factor/structura-factor-launchers"
-$BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@f0a78c40e5cc4f972df7cd83de1e84957741f427/bootstrap.ps1"
+$BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@be8c510ccf9eb4c82d1e84f1d7bc2034c4741aa7/bootstrap.ps1"
 $BASE_DIR = "C:\STRUCTURA"
 $KEYS_DIR = "$BASE_DIR\klucze"
 $MEDIA_DIR = "$BASE_DIR\media"
@@ -137,8 +137,7 @@ if ($keyFiles) {
             if ($keyLines.Count -gt 0) {
                 $keyContent = $keyLines -join "`n"
                 $deployKeyPath = "$KEYS_DIR\deploy_key"
-                # Use .NET to write with UTF-8 no BOM and LF line endings (Out-File adds CRLF/BOM which breaks OpenSSH)
-                [System.IO.File]::WriteAllText($deployKeyPath, $keyContent + "`n", [System.Text.UTF8Encoding]::new($false))
+                $keyContent | Out-File -FilePath $deployKeyPath -Encoding ASCII -NoNewline
                 Write-Host "  v Klucz zapisany: $deployKeyPath" -ForegroundColor Green
             } else {
                 Write-Host "  x Pusty klucz." -ForegroundColor Red
