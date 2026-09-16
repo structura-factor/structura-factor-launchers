@@ -152,10 +152,18 @@ if ($keyFiles) {
     }
 }
 
-# Weryfikuj zawartosc klucza
+# Weryfikuj zawartosc klucza - zatrzymaj jesli to nie klucz prywatny
 $keyRaw = Get-Content $deployKeyPath -Raw
 if ($keyRaw -notmatch 'BEGIN OPENSSH PRIVATE KEY' -and $keyRaw -notmatch 'BEGIN PRIVATE KEY') {
-    Write-Host "  ! Plik nie wyglada na klucz prywatny SSH. Kontynuje..." -ForegroundColor Yellow
+    Write-Host "  x To nie jest klucz prywatny SSH." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Wklejony tekst zaczyna sie od 'ssh-ed25519' - to jest KLUCZ PUBLICZNY." -ForegroundColor Yellow
+    Write-Host "  Potrzebny jest KLUCZ PRYWATNY - zaczyna sie od:" -ForegroundColor Yellow
+    Write-Host "    -----BEGIN OPENSSH PRIVATE KEY-----" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  Klucz prywatny to plik bez rozszerzenia .pub" -ForegroundColor DarkGray
+    Write-Host "  Usun zly plik z $KEYS_DIR i uruchom skrypt ponownie." -ForegroundColor Yellow
+    exit 1
 } else {
     Write-Host "  v Klucz prywatny SSH: zweryfikowany" -ForegroundColor Green
 }
@@ -280,8 +288,7 @@ if ($VM_RAM -ne 4096) { $ba += @("-VM_RAM", $VM_RAM) }
 if ($VM_CPU -ne 2) { $ba += @("-VM_CPU", $VM_CPU) }
 if ($VM_DISK -ne 40960) { $ba += @("-VM_DISK", $VM_DISK) }
 if ($EnableLUKS) { $ba += @("-EnableLUKS", "-LUKSPassword", $LUKSPassword) }
-if ($Quiet) { $ba += "-Quiet" }
-if ($Verbose) { $ba += "-Verbose" }
+# Nie przekazuj -Quiet/-Verbose - konflikt z CmdletBinding w bootstrap.ps1
 
 W-Log "bootstrap args: $($ba -join ' ')"
 Unblock-File -Path $bp -ErrorAction SilentlyContinue
