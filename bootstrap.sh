@@ -24,7 +24,7 @@ echo "Aby wdrozyc STRUCTURA na Windows 11:"
 echo "  1. Pobierz bootstrap.ps1 z repo"
 echo "  2. Uruchom: .\\bootstrap.ps1 -Client sawaryn"
 echo ""
-echo "Repo: https://github.com/ciemek/structura-factor-launchers"
+echo "Repo: https://github.com/structura-factor/structura-factor-launchers"
 echo ""
 
 exit 1
