@@ -52,7 +52,7 @@ $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
 $UBUNTU_ISO_NAME = "ubuntu-24.04.1-server-amd64.iso"
 $VBOX_INSTALLER_NAME = "VirtualBox-7.1.4-Win.exe"
-$GITHUB_RAW = "https://raw.githubusercontent.com"
+$GITHUB_RAW = "https://cdn.jsdelivr.net/gh"
 $LAUNCHER_REPO = "structura-factor/structura-factor-launchers"
 $CORE_REPO_URL = "git@github.com:structura-factor/structura-core.git"
 $CLIENT_REPO_URL = "git@github.com:structura-factor/structura-clients.git"
@@ -508,7 +508,7 @@ function Invoke-MediaSourcing {
     $vboxPath = "$mediaDir\$VBOX_INSTALLER_NAME"
 
     # Read expected SHA256 from versions.txt
-    $versionsUrl = "$GITHUB_RAW/$LAUNCHER_REPO/main/factor-vm-win11/media/versions.txt"
+    $versionsUrl = "$GITHUB_RAW/$LAUNCHER_REPO@main/factor-vm-win11/media/versions.txt"
     $versionsFile = "$mediaDir\versions.txt"
     try {
         Invoke-WebRequest -Uri $versionsUrl -OutFile $versionsFile -UseBasicParsing -TimeoutSec 30
