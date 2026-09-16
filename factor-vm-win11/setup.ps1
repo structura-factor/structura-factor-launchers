@@ -55,9 +55,9 @@ $VM_NAME = "structura-$Client"
 $UBUNTU_ISO_NAME = "ubuntu-24.04.1-server-amd64.iso"
 $VBOX_INSTALLER_NAME = "VirtualBox-7.1.4-Win.exe"
 $GITHUB_RAW = "https://raw.githubusercontent.com"
-$LAUNCHER_REPO = "ciemek/structura-factor-launchers"
-$CORE_REPO_URL = "git@github.com:ciemek/structura-core.git"
-$CLIENT_REPO_URL = "git@github.com:ciemek/structura-clients.git"
+$LAUNCHER_REPO = "structura-factor/structura-factor-launchers"
+$CORE_REPO_URL = "git@github.com:structura-factor/structura-core.git"
+$CLIENT_REPO_URL = "git@github.com:structura-factor/structura-clients.git"
 $MAX_RETRIES = 3
 $TOTAL_ETAPY = 8
 
