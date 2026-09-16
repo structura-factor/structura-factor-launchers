@@ -137,7 +137,8 @@ if ($keyFiles) {
             if ($keyLines.Count -gt 0) {
                 $keyContent = $keyLines -join "`n"
                 $deployKeyPath = "$KEYS_DIR\deploy_key"
-                $keyContent | Out-File -FilePath $deployKeyPath -Encoding ASCII -NoNewline
+                # Use .NET to write with UTF-8 no BOM and LF line endings (Out-File adds CRLF/BOM which breaks OpenSSH)
+                [System.IO.File]::WriteAllText($deployKeyPath, $keyContent + "`n", [System.Text.UTF8Encoding]::new($false))
                 Write-Host "  v Klucz zapisany: $deployKeyPath" -ForegroundColor Green
             } else {
                 Write-Host "  x Pusty klucz." -ForegroundColor Red
