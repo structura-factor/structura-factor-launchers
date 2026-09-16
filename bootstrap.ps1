@@ -191,7 +191,10 @@ if (Test-Path $tempClone) { Remove-Item $tempClone -Recurse -Force }
 $gitUrl = "git@github.com:$ClientRepo.git"
 
 # Setup SSH for git with deploy key
-$env:GIT_SSH_COMMAND = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -i $DeployKeyPath -o IdentitiesOnly=yes"
+# SSH on Windows (Git for Windows) strips backslashes from -i path
+    # Convert to forward slashes
+    $sshKeyPath = $DeployKeyPath -replace '\\', '/'
+    $env:GIT_SSH_COMMAND = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -i $sshKeyPath -o IdentitiesOnly=yes"
 
 # Temporarily relax error preference - git writes to stderr which triggers Stop
 $prevEAP = $ErrorActionPreference
