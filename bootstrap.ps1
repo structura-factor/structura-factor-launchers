@@ -191,10 +191,14 @@ if (Test-Path $tempClone) { Remove-Item $tempClone -Recurse -Force }
 $gitUrl = "git@github.com:$ClientRepo.git"
 
 # Setup SSH for git with deploy key
-# SSH on Windows (Git for Windows) strips backslashes from -i path
+if ($DeployKeyPath) {
+    # SSH on Windows (Git for Windows) strips backslashes from -i path
     # Convert to forward slashes
     $sshKeyPath = $DeployKeyPath -replace '\\', '/'
     $env:GIT_SSH_COMMAND = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -i $sshKeyPath -o IdentitiesOnly=yes"
+} else {
+    Write-StructuraLog "No deploy key provided - git clone may fail for private repos" -Level "WARN"
+}
 
 # Temporarily relax error preference - git writes to stderr which triggers Stop
 $prevEAP = $ErrorActionPreference
@@ -305,7 +309,7 @@ $setupArgs = @("-Client", $Client)
 if ($DeployKeyPath) { $setupArgs += @("-DeployKeyPath", $DeployKeyPath) }
 if ($MediaPath) { $setupArgs += @("-MediaPath", $MediaPath) }
 if ($Quiet) { $setupArgs += "-Quiet" }
-if ($Verbose) { $setupArgs += "-Verbose" }
+if ($PSBoundParameters.ContainsKey("Verbose")) { $setupArgs += "-Verbose" }
 
 # Step 9: Execute launcher
 Write-StructuraLog "Executing launcher: $launcherName/setup.ps1"
