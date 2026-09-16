@@ -38,8 +38,7 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$Quiet,
 
-    [Parameter(Mandatory = $false)]
-    [switch]$Verbose
+    # -Verbose provided by CmdletBinding automatically
 )
 
 $ErrorActionPreference = 'Stop'
