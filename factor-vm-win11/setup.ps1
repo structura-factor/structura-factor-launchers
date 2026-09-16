@@ -62,14 +62,15 @@ $TOTAL_ETAPY = 8
 # Braille spinner frames
 $BRAILLE_SPINNER = @([char]0x280B, [char]0x2839, [char]0x2838, [char]0x283C, [char]0x2834, [char]0x2826, [char]0x2827, [char]0x2807, [char]0x280F)
 
-# ANSI colors
-$ANSI_RESET = "`e[0m"
-$ANSI_CYAN = "`e[36m"
-$ANSI_GREEN = "`e[32m"
-$ANSI_RED = "`e[31m"
-$ANSI_YELLOW = "`e[33m"
-$ANSI_WHITE = "`e[37m"
-$ANSI_DIM = "`e[2m"
+# ANSI colors - [char]27 = ESC, works in PS 5.1 (backtick-e is PS 6+ only)
+$ESC = [char]27
+$ANSI_RESET = "$ESC[0m"
+$ANSI_CYAN = "$ESC[36m"
+$ANSI_GREEN = "$ESC[32m"
+$ANSI_RED = "$ESC[31m"
+$ANSI_YELLOW = "$ESC[33m"
+$ANSI_WHITE = "$ESC[37m"
+$ANSI_DIM = "$ESC[2m"
 
 # ============================================================================
 # Logging
@@ -833,7 +834,7 @@ function Invoke-DockerSetup {
         return $result
     } -Description "Docker install via SSH" -MaxRetries 3
 
-    if ($Verbose) {
+    if ($PSBoundParameters.ContainsKey("Verbose")) {
         Write-Host $installResult -ForegroundColor DarkGray
     }
 
@@ -873,6 +874,23 @@ function Invoke-RepoAndAppdata {
     } else {
         # Clone repos
         Write-Host "  Cloning repos to /opt/structura/repos/..." -ForegroundColor White
+
+        # Transfer deploy key to VM for git clone authentication
+        if ($DeployKeyPath -and (Test-Path $DeployKeyPath)) {
+            Write-Host "  Transferring deploy key to VM..." -ForegroundColor DarkGray
+            $vmKeyPath = "/tmp/structura_deploy_key"
+            scp -P $sshPort -o StrictHostKeyChecking=no $DeployKeyPath ${sshTarget}:$vmKeyPath 2>$null
+            $keySetupCmd = @"
+                mkdir -p ~/.ssh
+                cp $vmKeyPath ~/.ssh/id_ed25519
+                chmod 600 ~/.ssh/id_ed25519
+                rm -f $vmKeyPath
+                ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+                echo "KEY_SETUP_DONE"
+"@
+            $keySetupResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $keySetupCmd 2>&1
+            Write-Log "Deploy key transferred to VM"
+        }
 
         $cloneCmd = @"
             sudo mkdir -p /opt/structura/repos
@@ -982,7 +1000,7 @@ function Invoke-ContainerDeployment {
         return ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $deployCmd 2>&1
     } -Description "make deploy" -MaxRetries 3
 
-    if ($Verbose) {
+    if ($PSBoundParameters.ContainsKey("Verbose")) {
         Write-Host $deployResult -ForegroundColor DarkGray
     }
 
@@ -995,7 +1013,7 @@ function Invoke-ContainerDeployment {
     # NPM setup
     Write-Host "  Running make npm-setup..." -ForegroundColor White
     $npmResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget "cd /opt/structura/repos/structura-core && make npm-setup" 2>&1
-    if ($Verbose) { Write-Host $npmResult -ForegroundColor DarkGray }
+    if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $npmResult -ForegroundColor DarkGray }
     Write-Check "NPM configured (make npm-setup)"
 
     # Health check polling
@@ -1097,7 +1115,7 @@ function Invoke-HindsightAndConfig {
         return ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $initCmd 2>&1
     } -Description "init-hindsight" -MaxRetries 3
 
-    if ($Verbose) { Write-Host $initResult -ForegroundColor DarkGray }
+    if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $initResult -ForegroundColor DarkGray }
 
     if ($initResult -match 'HINDSIGHT_INIT_DONE') {
         Write-Check "Hindsight banks initialized (2 banks)"
@@ -1239,7 +1257,7 @@ F2BEOF
 "@
 
     $themeResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $themeCmd 2>&1
-    if ($Verbose) { Write-Host $themeResult -ForegroundColor DarkGray }
+    if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $themeResult -ForegroundColor DarkGray }
 
     if ($themeResult -match 'THEME_INSTALLED') {
         Write-Check "Dashboard theme: Aether Sawaryn installed"
@@ -1405,8 +1423,8 @@ function Show-Summary {
 # MAIN
 # ============================================================================
 
-# Start-Transcript for complete logging
-$transcriptFile = $LOG_FILE
+# Start-Transcript for complete logging (separate file to avoid lock conflict with Write-Log)
+$transcriptFile = "$LOG_DIR\setup-transcript.log"
 if (-not (Test-Path $LOG_DIR)) {
     New-Item -ItemType Directory -Path $LOG_DIR -Force | Out-Null
 }
