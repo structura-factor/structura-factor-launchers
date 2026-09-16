@@ -12,8 +12,7 @@ param(
     [int]$VM_DISK = 40960,
     [switch]$EnableLUKS,
     [string]$LUKSPassword,
-    [switch]$Quiet,
-    [switch]$Verbose
+    [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Stop'
