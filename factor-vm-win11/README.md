@@ -5,7 +5,7 @@
 Launcher tworzy pelne srodowisko STRUCTURA AI na Windows 11:
 - Maszyna wirtualna VirtualBox z Ubuntu 24.04 Server
 - Docker Compose stack (9 kontenerow)
-- Hindsight (PostgreSQL) z 7 bankami pamieci
+- Hindsight (PostgreSQL) z 2 bankami pamieci (Kontekst_Sprawy + Wiedza_Osobista)
 - Hermes Agent z konfiguracja kliencka
 - NPM, SearXNG, n8n, Duplicati, Portainer, Homepage, Telegram bot
 
