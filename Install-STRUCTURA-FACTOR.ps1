@@ -21,8 +21,7 @@ $ErrorActionPreference = 'Stop'
 # --- Stale ---
 $CLIENT = "sawaryn"
 $LAUNCHER_REPO = "structura-factor/structura-factor-launchers"
-$GITHUB_RAW = "https://raw.githubusercontent.com"
-$BOOTSTRAP_URL = "$GITHUB_RAW/$LAUNCHER_REPO/main/bootstrap.ps1"
+$BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@main/bootstrap.ps1"
 $BASE_DIR = "C:\STRUCTURA"
 $KEYS_DIR = "$BASE_DIR\klucze"
 $MEDIA_DIR = "$BASE_DIR\media"
