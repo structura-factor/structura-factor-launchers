@@ -72,8 +72,8 @@ Windows 11 (host) → VirtualBox VM → Ubuntu 24.04 Server → Docker Compose �
 
 ## Powiazane repozytoria
 
-- `ciemek/structura-core` (private) - bazowy stack Docker Compose
-- `ciemek/structura-clients` (private) - konfiguracja per-klientowa (np. `sawaryn/`)
+- `structura-factor/structura-core` (private) - bazowy stack Docker Compose
+- `structura-factor/structura-clients` (private) - konfiguracja per-klientowa (np. `sawaryn/`)
 
 ## Licencja
 
