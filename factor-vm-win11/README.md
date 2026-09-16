@@ -26,7 +26,7 @@ Launcher tworzy pelne srodowisko STRUCTURA AI na Windows 11:
 
 ```powershell
 # Pobierz bootstrap.ps1 z repo
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ciemek/structura-factor-launchers/main/bootstrap.ps1" -OutFile "bootstrap.ps1"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/structura-factor/structura-factor-launchers/main/bootstrap.ps1" -OutFile "bootstrap.ps1"
 
 # Uruchom
 .\bootstrap.ps1 -Client sawaryn -DeployKeyPath C:\path\to\deploy_key
