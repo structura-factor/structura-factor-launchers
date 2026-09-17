@@ -319,62 +319,36 @@ function Show-HealthTable {
 function Invoke-SshWithPassword {
     param(
         [string]$Command,
-        [string]$Host = "127.0.0.1",
+        [string]$HostName = "127.0.0.1",
         [int]$Port = 2222,
         [string]$User = "structura",
         [string]$Password = "structura",
         [int]$TimeoutSec = 60
     )
 
-    # Use SSH_ASKPASS trick: create a temp script that echoes the password
-    $askPassScript = "$env:TEMP\ssh-askpass.ps1"
-    "@echo `$env:SSH_PASSWORD" | Out-File -FilePath $askPassScript -Encoding ASCII -Force
-    $askPassBat = "$env:TEMP\ssh-askpass.bat"
-    "@`$env:TEMP\ssh-askpass.ps1" | Out-File -FilePath $askPassBat -Encoding ASCII -Force
+    # Create a temp script that echoes the password for SSH_ASKPASS
+    $askPass = "$env:TEMP\ssh-askpass.cmd"
+    "@echo off`necho %SSH_PASSWORD%" | Out-File -FilePath $askPass -Encoding ASCII -Force
     
-    $env:SSH_ASKPASS = $askPassBat
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    
+    $env:SSH_ASKPASS = $askPass
+    $env:SSH_ASKPASS_REQUIRE = "force"
     $env:SSH_PASSWORD = $Password
     $env:DISPLAY = "dummy"
 
     try {
-        $sshArgs = @(
-            "-p", $Port,
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=NUL",
-            "-o", "ConnectTimeout=30",
-            "-o", "PreferredAuthentications=password",
-            "-o", "PubkeyAuthentication=no",
-            "$User@$Host",
-            $Command
-        )
-        
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = "ssh"
-        $psi.Arguments = ($sshArgs -join ' ')
-        $psi.UseShellExecute = $false
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.RedirectStandardInput = $true
-        $psi.CreateNoWindow = $true
-        $psi.EnvironmentVariables["SSH_ASKPASS"] = $askPassBat
-        $psi.EnvironmentVariables["SSH_PASSWORD"] = $Password
-        $psi.EnvironmentVariables["DISPLAY"] = "dummy"
-        
-        $proc = [System.Diagnostics.Process]::Start($psi)
-        $output = $proc.StandardOutput.ReadToEnd()
-        $error = $proc.StandardError.ReadToEnd()
-        $proc.WaitForExit($TimeoutSec * 1000)
-        
-        if (-not $proc.HasExited) {
-            $proc.Kill()
-        }
-        
-        return $output
+        $result = & ssh -p $Port -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL `
+            -o ConnectTimeout=30 -o PreferredAuthentications=password -o PubkeyAuthentication=no `
+            "$User@$HostName" $Command 2>&1
+        return ($result -join "`n")
     }
     finally {
-        Remove-Item $askPassScript -Force -ErrorAction SilentlyContinue
-        Remove-Item $askPassBat -Force -ErrorAction SilentlyContinue
+        $ErrorActionPreference = $prevEAP
+        Remove-Item $askPass -Force -ErrorAction SilentlyContinue
         Remove-Item env:\SSH_ASKPASS -ErrorAction SilentlyContinue
+        Remove-Item env:\SSH_ASKPASS_REQUIRE -ErrorAction SilentlyContinue
         Remove-Item env:\SSH_PASSWORD -ErrorAction SilentlyContinue
         Remove-Item env:\DISPLAY -ErrorAction SilentlyContinue
     }
@@ -383,7 +357,7 @@ function Invoke-SshWithPassword {
 function Install-SshKeyOnVm {
     param(
         [string]$PublicKey,
-        [string]$Host = "127.0.0.1",
+        [string]$HostName = "127.0.0.1",
         [int]$Port = 2222,
         [string]$User = "structura",
         [string]$Password = "structura"
@@ -1024,7 +998,7 @@ function Get-VmIpAndSsh {
                 if ($sshTest -match 'SSH_OK') {
                     # Password works - install the key for future use
                     if ($pubKey) {
-                        Install-SshKeyOnVm -PublicKey $pubKey -Host $sshHost -Port $sshPort | Out-Null
+                        Install-SshKeyOnVm -PublicKey $pubKey -HostName $sshHost -Port $sshPort | Out-Null
                         Write-Check "SSH key installed on VM"
                     }
                     $sshStable = $true
