@@ -890,21 +890,32 @@ function Invoke-VMCreation {
         if ($DeployKeyPath -and (Test-Path $DeployKeyPath)) {
             $pubKey = (ssh-keygen -y -f $DeployKeyPath 2>$null)
         }
-        # Write post-install script to install SSH key (avoids quoting issues with --post-install-command)
+        # Use --post-install-template: a script file on host that gets copied to VM and executed
         $postInstallScript = "$LOG_DIR\post-install.sh"
+        "#!/bin/bash" | Out-File -FilePath $postInstallScript -Encoding ASCII -Force
+        "# Install SSH key for key-based auth" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
+        "mkdir -p /home/structura/.ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
         if ($pubKey) {
-            "#!/bin/bash" | Out-File -FilePath $postInstallScript -Encoding ASCII -Force
-            "mkdir -p /home/structura/.ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-            "echo '$pubKey' >> /home/structura/.ssh/authorized_keys" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-            "chmod 600 /home/structura/.ssh/authorized_keys" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-            "chown -R structura:structura /home/structura/.ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-            "systemctl enable ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-            "systemctl start ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-            "reboot" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-            & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local --post-install-command="/bin/bash $postInstallScript" 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
-        } else {
-            & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            "echo ''$pubKey'' >> /home/structura/.ssh/authorized_keys" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
         }
+        "chmod 600 /home/structura/.ssh/authorized_keys" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
+        "chown -R structura:structura /home/structura/.ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
+        "systemctl enable ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
+        "systemctl restart ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
+        "# Auto-reboot after install" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
+        "sleep 3 && reboot" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
+        
+        $unattendedArgs = @(
+            "unattended", "install", $VM_NAME,
+            "--iso=$isoFilePath",
+            "--user=structura",
+            "--password=structura",
+            "--full-user-name=STRUCTURA",
+            "--time-zone=Europe/Warsaw",
+            "--hostname=structura.local",
+            "--post-install-template=$postInstallScript"
+        )
+        & $vbox @unattendedArgs 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
         $unattendedExit = $LASTEXITCODE
         $ErrorActionPreference = $prevEAP
         Write-Log "Unattended install exit code: $unattendedExit"
