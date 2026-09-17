@@ -22,7 +22,7 @@ $ErrorActionPreference = 'Stop'
 # --- Stale ---
 $CLIENT = "sawaryn"
 $LAUNCHER_REPO = "structura-factor/structura-factor-launchers"
-$BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@ba08692f0f31/bootstrap.ps1"
+$BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@fd9192fd1ee7a0db68d26be7c2fe440fc017e1ec/bootstrap.ps1"
 $BASE_DIR = $InstallPath
 $KEYS_DIR = "$BASE_DIR\klucze"
 $MEDIA_DIR = "$BASE_DIR\media"
@@ -283,7 +283,7 @@ if ($MediaCachePath) { Write-Host "  Cache:   $MediaCachePath" -ForegroundColor 
 if ($EnableLUKS) { Write-Host "  LUKS:    wlaczony" -ForegroundColor White }
 Write-Host ""
 
-$ba = @("-Client", $CLIENT, "-DeployKeyPath", "'$deployKeyPath'", "-MediaPath", "'$MEDIA_DIR'")
+$ba = @("-Client", $CLIENT, "-DeployKeyPath", "'$deployKeyPath'", "-MediaPath", "'$MEDIA_DIR'", "-InstallPath", "'$BASE_DIR'")
 if ($VM_RAM -ne 4096) { $ba += @("-VM_RAM", $VM_RAM) }
 if ($VM_CPU -ne 2) { $ba += @("-VM_CPU", $VM_CPU) }
 if ($VM_DISK -ne 40960) { $ba += @("-VM_DISK", $VM_DISK) }
