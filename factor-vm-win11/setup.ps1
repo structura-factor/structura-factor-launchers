@@ -597,13 +597,30 @@ function Invoke-MediaSourcing {
 
             # Install silently
             Write-Host "  Installing VirtualBox..." -ForegroundColor White
-            $installProc = Start-Process -FilePath $vboxPath -ArgumentList "-silent -noreboot" -Wait -PassThru
+            $installProc = Start-Process -FilePath $vboxPath -ArgumentList "--silent --noreboot" -Wait -PassThru
             if ($installProc.ExitCode -eq 0) {
                 Write-Check "VirtualBox: installed"
                 $mediaResults.InstalledVBox = $true
             } else {
                 Write-Check "VirtualBox install exit code: $($installProc.ExitCode)" -Warn
+                Write-Host "    Trying alternate install arguments..." -ForegroundColor Yellow
+                $installProc = Start-Process -FilePath $vboxPath -ArgumentList "-silent -noreboot" -Wait -PassThru
+                if ($installProc.ExitCode -eq 0) {
+                    Write-Check "VirtualBox: installed (alternate args)"
+                    $mediaResults.InstalledVBox = $true
+                } else {
+                    Write-Check "VirtualBox install failed (exit $($installProc.ExitCode))" -Fail
+                }
             }
+
+            # Refresh environment variables - installer sets VBOX_INSTALL_PATH system-wide
+            # but current process doesn't see it until we reload
+            $env:VBOX_INSTALL_PATH = [System.Environment]::GetEnvironmentVariable("VBOX_INSTALL_PATH", "Machine")
+            $env:VBOX_MSI_INSTALL_PATH = [System.Environment]::GetEnvironmentVariable("VBOX_MSI_INSTALL_PATH", "Machine")
+            # Also update PATH to include VBox directory
+            $machinePath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
+            if ($machinePath) { $env:PATH = "$machinePath;$env:PATH" }
+            Write-Log "VBox env refreshed: VBOX_INSTALL_PATH=$env:VBOX_INSTALL_PATH"
 
             # Save to OneDrive
             if ($useOneDrive) {
@@ -633,7 +650,23 @@ function Invoke-VMCreation {
 
     $vbox = Get-VBoxManage
     if (-not $vbox) {
+        # VBox was just installed but env not refreshed - try direct path check
+        $defaultVBoxPath = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
+        if (Test-Path $defaultVBoxPath) {
+            $vbox = $defaultVBoxPath
+            Write-Check "VBoxManage found at default path (env not refreshed): $vbox"
+        } else {
+            $defaultVBoxPath86 = "C:\Program Files (x86)\Oracle\VirtualBox\VBoxManage.exe"
+            if (Test-Path $defaultVBoxPath86) {
+                $vbox = $defaultVBoxPath86
+                Write-Check "VBoxManage found at x86 path: $vbox"
+            }
+        }
+    }
+    if (-not $vbox) {
         Write-Check "VBoxManage not found after install" -Fail
+        Write-Host "    VirtualBox may need a system restart to complete installation." -ForegroundColor Yellow
+        Write-Host "    Or install manually from: $vboxPath" -ForegroundColor Yellow
         throw "VBoxManage not available"
     }
 
