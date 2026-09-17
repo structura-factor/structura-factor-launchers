@@ -391,6 +391,7 @@ function Get-VBoxManage {
         "C:\Program Files (x86)\Oracle\VirtualBox"
     )
     foreach ($basePath in $vboxPaths) {
+        if (-not $basePath) { continue }
         $exe = Join-Path $basePath "VBoxManage.exe"
         if (Test-Path $exe) { return $exe }
     }
