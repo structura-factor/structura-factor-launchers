@@ -616,11 +616,11 @@ function Invoke-MediaSourcing {
             if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
             New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
 
-            # Step 1: Extract MSI from wrapper exe
+            # Step 1: Extract MSI from wrapper exe (silent, no GUI dialog)
             Write-Host "    Extracting MSI..." -ForegroundColor DarkGray
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
-            & $vboxPath -extract -path $extractDir 2>&1 | Out-Null
+            $extractProc = Start-Process -FilePath $vboxPath -ArgumentList "-extract","-path",$extractDir,"-silent" -Wait -PassThru -WindowStyle Hidden
             $ErrorActionPreference = $prevEAP
             Start-Sleep -Seconds 2
 
