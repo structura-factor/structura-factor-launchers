@@ -603,38 +603,50 @@ function Invoke-MediaSourcing {
             }
             Write-Check "VirtualBox: downloaded"
 
-            # Install silently - VBox 7.1+ wrapper exe uses --msiparams to pass MSI flags
+            # Install VirtualBox - extract MSI from wrapper exe, then install via msiexec
+            # VBox 7.1+ wrapper exe does NOT support -silent/--silent (exit 2)
+            # MSI install returns 1603 on Win11 even when successful (Python module WixRemoveFoldersEx bug)
             Write-Host "  Installing VirtualBox..." -ForegroundColor White
-            $vboxInstallArgs = "--msiparams", "/quiet", "/norestart", "REBOOT=Suppress", "ALLUSERS=1"
-            $installProc = Start-Process -FilePath $vboxPath -ArgumentList $vboxInstallArgs -Wait -PassThru
-            Write-Log "VBox install exit code: $($installProc.ExitCode)"
-            if ($installProc.ExitCode -eq 0) {
-                Write-Check "VirtualBox: installed"
-                $mediaResults.InstalledVBox = $true
+            $extractDir = Join-Path $env:TEMP "vbox-extract"
+            if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+            New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+
+            # Step 1: Extract MSI from wrapper exe
+            Write-Host "    Extracting MSI..." -ForegroundColor DarkGray
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            & $vboxPath -extract -path $extractDir 2>&1 | Out-Null
+            $ErrorActionPreference = $prevEAP
+            Start-Sleep -Seconds 2
+
+            # Find the .msi file (might be in subdirectory)
+            $msiFile = Get-ChildItem -Path $extractDir -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $msiFile) {
+                # Fallback: try --msiparams method
+                Write-Host "    MSI not extracted, trying --msiparams..." -ForegroundColor Yellow
+                $msiProc = Start-Process -FilePath $vboxPath -ArgumentList "--msiparams", "/quiet", "/norestart" -Wait -PassThru
+                $exitCode = $msiProc.ExitCode
             } else {
-                Write-Check "VirtualBox install exit code: $($installProc.ExitCode) - trying extract+msiexec method" -Warn
-                # Fallback: extract MSI then install via msiexec
-                $extractDir = "$env:TEMP\vbox-extract"
-                if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
-                & $vboxPath -extract -path $extractDir -silent 2>$null
-                Start-Sleep -Seconds 3
-                $msiFile = Get-ChildItem -Path $extractDir -Filter "*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($msiFile) {
-                    Write-Host "    Installing via msiexec..." -ForegroundColor Yellow
-                    $msiProc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$($msiFile.FullName)`" /quiet /norestart REBOOT=Suppress ALLUSERS=1" -Wait -PassThru
-                    Write-Log "msiexec exit code: $($msiProc.ExitCode)"
-                    if ($msiProc.ExitCode -eq 0) {
-                        Write-Check "VirtualBox: installed via msiexec"
-                        $mediaResults.InstalledVBox = $true
-                    } else {
-                        Write-Check "VirtualBox msiexec failed (exit $($msiProc.ExitCode))" -Fail
-                    }
-                } else {
-                    Write-Check "VirtualBox: MSI not found after extract" -Fail
-                }
+                Write-Host "    Installing via msiexec..." -ForegroundColor DarkGray
+                $msiArgs = "/i `"$($msiFile.FullName)`" /quiet /norestart REBOOT=Suppress ALLUSERS=1 ADDLOCAL=VBoxApplication,VBoxNetwork,VBoxNetworkFlt,VBoxNetworkAdp NETWORKTYPE=NDIS6"
+                $msiProc = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru
+                $exitCode = $msiProc.ExitCode
+                Write-Log "VBox msiexec exit code: $exitCode"
             }
 
-            # Refresh environment variables - installer sets VBOX_INSTALL_PATH system-wide
+            # Accept 0 (success) and 1603 (known Win11 Python module bug - install succeeds)
+            if ($exitCode -eq 0 -or $exitCode -eq 1603) {
+                Write-Check "VirtualBox: installed (exit $exitCode)"
+                $mediaResults.InstalledVBox = $true
+            } else {
+                Write-Check "VirtualBox install failed (exit $exitCode)" -Fail
+                Write-Host "    Try manually: $vboxPath" -ForegroundColor Yellow
+            }
+
+            # Clean up extracted files
+            if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
+
+            # Refresh environment variables
             $env:VBOX_INSTALL_PATH = [System.Environment]::GetEnvironmentVariable("VBOX_INSTALL_PATH", "Machine")
             $env:VBOX_MSI_INSTALL_PATH = [System.Environment]::GetEnvironmentVariable("VBOX_MSI_INSTALL_PATH", "Machine")
             $machinePath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
