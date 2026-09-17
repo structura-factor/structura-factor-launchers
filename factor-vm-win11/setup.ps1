@@ -50,8 +50,8 @@ $SCRIPT_VERSION = "1.0"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
-$UBUNTU_ISO_NAME = "ubuntu-24.04.1-server-amd64.iso"
-$VBOX_INSTALLER_NAME = "VirtualBox-7.1.4-Win.exe"
+$UBUNTU_ISO_NAME = "ubuntu-24.04.5-live-server-amd64.iso"
+$VBOX_INSTALLER_NAME = "VirtualBox-7.1.16-172425-Win.exe"
 $GITHUB_RAW = "https://cdn.jsdelivr.net/gh"
 $LAUNCHER_REPO = "structura-factor/structura-factor-launchers"
 $CORE_REPO_URL = "git@github.com:structura-factor/structura-core.git"
@@ -584,7 +584,7 @@ function Invoke-MediaSourcing {
 
     if (-not $vboxExists -and -not $Preflight.VBoxOK) {
         # Need to install VirtualBox
-        $vboxUrl = "https://download.virtualbox.org/virtualbox/7.1.4/$VBOX_INSTALLER_NAME"
+        $vboxUrl = "https://download.virtualbox.org/virtualbox/7.1.16/$VBOX_INSTALLER_NAME"
         Write-Host "  Downloading VirtualBox installer (~100MB)..." -ForegroundColor White
 
         try {
