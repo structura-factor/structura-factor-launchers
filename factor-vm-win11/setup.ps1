@@ -850,6 +850,11 @@ function Invoke-VMCreation {
         & $vbox modifyvm $VM_NAME --natpf1 "ssh,tcp,,2222,,22" 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --natpf1 "http,tcp,,8080,,80" 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --natpf1 "https,tcp,,8443,,443" 2>&1 | Out-Null
+        # Enable VRDE if Extension Pack is installed (for RDP preview)
+        $extpackReady = (& $vbox list extpacks 2>$null | Select-String "Oracle VM VirtualBox Extension Pack")
+        if ($extpackReady) {
+            & $vbox modifyvm $VM_NAME --vrde on --vrdeport 5000 --vrde-auth-type null 2>&1 | Out-Null
+        }
         # Create disk
         $diskPath = "$LOG_DIR\vm-disks\$VM_NAME.vdi"
         $diskDir = Split-Path $diskPath
