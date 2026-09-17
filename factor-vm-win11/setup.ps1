@@ -509,7 +509,7 @@ function Invoke-MediaSourcing {
     $vboxPath = "$mediaDir\$VBOX_INSTALLER_NAME"
 
     # Read expected SHA256 from versions.txt
-    $versionsUrl = "$GITHUB_RAW/$LAUNCHER_REPO@main/factor-vm-win11/media/versions.txt"
+    $versionsUrl = "${GITHUB_RAW}/${LAUNCHER_REPO}@main/factor-vm-win11/media/versions.txt"
     $versionsFile = "$mediaDir\versions.txt"
     try {
         Invoke-WebRequest -Uri $versionsUrl -OutFile $versionsFile -UseBasicParsing -TimeoutSec 30
@@ -1142,7 +1142,7 @@ function Invoke-PostSetup {
     # 4 jobs: pgdump (02:00), appdata (02:15), ai-workspace (02:30), pgdata (weekly Sun 03:00)
     $duplicatiCmd = @"
         # Duplicati backup jobs are configured via API or client config
-        # The job definitions are in structura-clients/$Client/duplicati/
+        # The job definitions are in structura-clients/${Client}/duplicati/
         echo "Duplicati jobs: configured via client config (4 jobs)"
 "@
     ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $duplicatiCmd 2>&1 | Out-Null
