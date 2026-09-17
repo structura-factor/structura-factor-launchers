@@ -885,10 +885,15 @@ function Invoke-VMCreation {
         if ($DeployKeyPath -and (Test-Path $DeployKeyPath)) {
             $pubKey = (ssh-keygen -y -f $DeployKeyPath 2>$null)
         }
+        # Write post-install script to install SSH key (avoids quoting issues with --post-install-command)
+        $postInstallScript = "$LOG_DIR\post-install.sh"
         if ($pubKey) {
-            # Install SSH key via post-install-command (runs as root after Ubuntu install)
-            $postCmd = "mkdir -p /home/structura/.ssh; echo ''$pubKey'' >> /home/structura/.ssh/authorized_keys; chmod 600 /home/structura/.ssh/authorized_keys; chown -R structura:structura /home/structura/.ssh"
-            & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local --post-install-command="$postCmd" 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            "#!/bin/bash" | Out-File -FilePath $postInstallScript -Encoding ASCII -Force
+            "mkdir -p /home/structura/.ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
+            "echo '$pubKey' >> /home/structura/.ssh/authorized_keys" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
+            "chmod 600 /home/structura/.ssh/authorized_keys" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
+            "chown -R structura:structura /home/structura/.ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
+            & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local --post-install-command="/bin/bash $postInstallScript" 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
         } else {
             & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
         }
@@ -976,9 +981,9 @@ function Get-VmIpAndSsh {
         $sshStable = $false
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
-        for ($i = 0; $i -lt 30; $i++) {
+        for ($i = 0; $i -lt 90; $i++) {
             try {
-                $sshTest = ssh -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=10 -o BatchMode=yes -i "$env:USERPROFILE\.ssh\id_ed25519" $sshHost "echo SSH_OK" 2>$null
+                $sshTest = ssh -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=10 -o BatchMode=yes -i "$env:USERPROFILE\.ssh\id_ed25519" $sshHost "echo SSH_OK" 2>&1
                 if ($sshTest -match 'SSH_OK') {
                     $sshStable = $true
                     break
@@ -995,31 +1000,11 @@ function Get-VmIpAndSsh {
         if ($sshStable) {
             Write-Check "SSH ready (key auth) on ${sshHost}:${sshPort}"
         } else {
-            Write-Check "SSH key auth failed, trying password install..." -Warn
-            # Last resort: try SSH_ASKPASS to install key with password
-            $askPass = "$env:TEMP\ssh-pass.cmd"
-            "echo structura" | Out-File -FilePath $askPass -Encoding ASCII -Force
-            $env:SSH_ASKPASS = $askPass
-            $env:SSH_ASKPASS_REQUIRE = "force"
-            $env:DISPLAY = "x"
-            $pubKey = (ssh-keygen -y -f "$env:USERPROFILE\.ssh\id_ed25519" 2>$null)
-            if ($pubKey) {
-                $prevEAP = $ErrorActionPreference
-                $ErrorActionPreference = 'Continue'
-                $installCmd = "mkdir -p ~/.ssh && echo '$pubKey' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
-                ssh -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o PreferredAuthentications=password -o PubkeyAuthentication=no $sshHost $installCmd 2>$null
-                $ErrorActionPreference = $prevEAP
-                Start-Sleep -Seconds 3
-                $sshTest = ssh -p $sshPort -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes -i "$env:USERPROFILE\.ssh\id_ed25519" $sshHost "echo SSH_OK" 2>$null
-                if ($sshTest -match 'SSH_OK') {
-                    $sshStable = $true
-                    Write-Check "SSH key auth working after manual install"
-                }
-            }
-            Remove-Item $askPass -Force -ErrorAction SilentlyContinue
-            Remove-Item env:\SSH_ASKPASS -ErrorAction SilentlyContinue
-            Remove-Item env:\SSH_ASKPASS_REQUIRE -ErrorAction SilentlyContinue
-            Remove-Item env:\DISPLAY -ErrorAction SilentlyContinue
+            Write-Check "SSH key auth failed after 5 minutes" -Warn
+            Write-Host "  Manual SSH install needed. Run:" -ForegroundColor Yellow
+            Write-Host "    ssh -p 2222 structura@127.0.0.1" -ForegroundColor White
+            Write-Host "  Password: structura" -ForegroundColor White
+            Write-Host "  Then run: mkdir -p ~/.ssh && echo '<pubkey>' >> ~/.ssh/authorized_keys" -ForegroundColor White
         }
         return @{ VmExists = $true; VmIp = $sshHost }
     } else {
