@@ -204,66 +204,32 @@ function Show-DownloadBar {
         [string]$Description
     )
 
-    if ($Quiet) {
-        Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing -TimeoutSec 300
-        return
-    }
-
     $partialDest = "$Destination.partial"
     if (Test-Path $partialDest) { Remove-Item $partialDest -Force }
 
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $progressIdx = 0
-
-    # Use .NET WebClient for progress tracking
-    $client = New-Object System.Net.WebClient
-
-    # Register progress event
-    $downloadComplete = $false
-    $totalBytes = 0
-    $downloadedBytes = 0
-
-    Register-ObjectEvent -InputObject $client -EventName DownloadProgressChanged -SourceIdentifier "DLProgress" -Action {
-        $script:downloadedBytes = $EventArgs.BytesReceived
-        $script:totalBytes = $EventArgs.TotalBytesToReceive
-        $pct = if ($EventArgs.TotalBytesToReceive -gt 0) { [math]::Floor(($EventArgs.BytesReceived / $EventArgs.TotalBytesToReceive) * 100) } else { 0 }
-        $barWidth = 40
-        $filled = [math]::Floor($pct / 100 * $barWidth)
-        $empty = $barWidth - $filled
-        $bar = ("#" * $filled) + ("-" * $empty)
-        $downloadedMB = [math]::Round($EventArgs.BytesReceived / 1MB, 1)
-        $totalMB = if ($EventArgs.TotalBytesToReceive -gt 0) { [math]::Round($EventArgs.TotalBytesToReceive / 1MB, 1) } else { 0 }
-        $speed = if ($sw.Elapsed.TotalSeconds -gt 0) { [math]::Round($EventArgs.BytesReceived / $sw.Elapsed.TotalSeconds / 1MB, 1) } else { 0 }
-        $etaSec = if ($speed -gt 0) { [math]::Ceiling(($EventArgs.TotalBytesToReceive - $EventArgs.BytesReceived) / ($speed * 1MB)) } else { 0 }
-        $eta = Format-Elapsed -Seconds $etaSec
-        Write-Host -NoNewline "`r  [$bar] $pct% | ${downloadedMB}MB / ${totalMB}MB | ${speed} MB/s | ETA: $eta   "
-    } | Out-Null
-
-    Register-ObjectEvent -InputObject $client -EventName DownloadFileCompleted -SourceIdentifier "DLComplete" -Action {
-        $script:downloadComplete = $true
-    } | Out-Null
-
     try {
-        $client.DownloadFileAsync([Uri]$Url, $partialDest)
+        # Use BITS or simple Invoke-WebRequest with Write-Progress
+        # Invoke-WebRequest has built-in progress bar in PS 5.1
+        Write-Host "  Downloading $Description..." -ForegroundColor White
+        Write-Host "  URL: $Url" -ForegroundColor DarkGray
+        
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        Invoke-WebRequest -Uri $Url -OutFile $partialDest -UseBasicParsing -TimeoutSec 600
+        $ErrorActionPreference = $prevEAP
 
-        while (-not $downloadComplete) {
-            Start-Sleep -Milliseconds 500
+        if (Test-Path $partialDest) {
+            $size = [math]::Round((Get-Item $partialDest).Length / 1MB, 1)
+            Move-Item $partialDest $Destination -Force
+            Write-Host "  v $Description ($size MB)" -ForegroundColor Green
+        } else {
+            throw "Download produced no file"
         }
-
-        Move-Item $partialDest $Destination -Force
-        Write-Host ""
-        $size = [math]::Round((Get-Item $Destination).Length / 1MB, 1)
-        Write-Host "  Download complete: $Description ($size MB)" -ForegroundColor Green
     }
     catch {
         if (Test-Path $partialDest) { Remove-Item $partialDest -Force }
         Write-Log "Download failed: $_" -Level "ERROR"
         throw
-    }
-    finally {
-        Unregister-Event -SourceIdentifier "DLProgress" -ErrorAction SilentlyContinue
-        Unregister-Event -SourceIdentifier "DLComplete" -ErrorAction SilentlyContinue
-        $client.Dispose()
     }
 }
 
