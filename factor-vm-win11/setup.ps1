@@ -724,14 +724,17 @@ function Invoke-VMCreation {
         switch ($vmChoice) {
             "1" {
                 Write-Host "  Zatrzymywanie i usuwanie starej VM..." -ForegroundColor White
+                $prevEAP = $ErrorActionPreference
+                $ErrorActionPreference = 'Continue'
                 # Only poweroff if VM is running (controlvm fails if VM is off)
                 $isVmRunning = (& $vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState="running"')
                 if ($isVmRunning) {
-                    & $vbox controlvm $VM_NAME poweroff 2>$null
+                    & $vbox controlvm $VM_NAME poweroff 2>&1 | Out-Null
                     Start-Sleep -Seconds 3
                 }
-                & $vbox unregistervm $VM_NAME --delete 2>$null
+                & $vbox unregistervm $VM_NAME --delete 2>&1 | Out-Null
                 Start-Sleep -Seconds 2
+                $ErrorActionPreference = $prevEAP
                 $vmExists = $false
                 Write-Check "Stara VM usunieta"
             }
@@ -760,10 +763,12 @@ function Invoke-VMCreation {
     if (-not $vmExists) {
         Write-Host "  Creating VM: $VM_NAME ($VM_RAM MB RAM, $VM_CPU vCPU, $VM_DISK MB disk)" -ForegroundColor White
 
-        # Create VM
-        & $vbox createvm --name $VM_NAME --ostype Ubuntu_64 --register 2>$null
-        & $vbox modifyvm $VM_NAME --memory $VM_RAM --cpus $VM_CPU --nic1 bridged --boot1 dvd --boot2 disk
-        & $vbox modifyvm $VM_NAME --uart1 0x3F8 4 --uartmode1 file "$LOG_DIR\vm-console.log"
+        # Create VM - relax EAP for VBoxManage (writes progress to stderr)
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        & $vbox createvm --name $VM_NAME --ostype Ubuntu_64 --register 2>&1 | Out-Null
+        & $vbox modifyvm $VM_NAME --memory $VM_RAM --cpus $VM_CPU --nic1 bridged --boot1 dvd --boot2 disk 2>&1 | Out-Null
+        & $vbox modifyvm $VM_NAME --uart1 0x3F8 4 --uartmode1 file "$LOG_DIR\vm-console.log" 2>&1 | Out-Null
 
         # Create disk
         $diskPath = "$LOG_DIR\vm-disks\$VM_NAME.vdi"
@@ -772,14 +777,15 @@ function Invoke-VMCreation {
             New-Item -ItemType Directory -Path $diskDir -Force | Out-Null
         }
         if (-not (Test-Path $diskPath)) {
-            & $vbox createmedium disk --filename $diskPath --size $VM_DISK --format VDI 2>$null
+            & $vbox createmedium disk --filename $diskPath --size $VM_DISK --format VDI 2>&1 | Out-Null
         }
-        & $vbox storagectl $VM_NAME --name "SATA" --add sata --controller IntelAhci 2>$null
-        & $vbox storageattach $VM_NAME --storagectl "SATA" --port 0 --device 0 --type hdd --medium $diskPath 2>$null
+        & $vbox storagectl $VM_NAME --name "SATA" --add sata --controller IntelAhci 2>&1 | Out-Null
+        & $vbox storageattach $VM_NAME --storagectl "SATA" --port 0 --device 0 --type hdd --medium $diskPath 2>&1 | Out-Null
 
         # Attach ISO
-        & $vbox storagectl $VM_NAME --name "IDE" --add ide 2>$null
-        & $vbox storageattach $VM_NAME --storagectl "IDE" --port 1 --device 0 --type dvddrive --medium $Media.IsoPath 2>$null
+        & $vbox storagectl $VM_NAME --name "IDE" --add ide 2>&1 | Out-Null
+        & $vbox storageattach $VM_NAME --storagectl "IDE" --port 1 --device 0 --type dvddrive --medium $Media.IsoPath 2>&1 | Out-Null
+        $ErrorActionPreference = $prevEAP
 
         Write-Check "VM created: $VM_NAME"
 
