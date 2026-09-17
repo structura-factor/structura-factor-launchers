@@ -884,8 +884,9 @@ function Get-VmIpAndSsh {
     $sshHost = "127.0.0.1"
     $sshPort = 2222
 
-    Write-Host "  Waiting for SSH on ${sshHost}:${sshPort}..." -ForegroundColor White
+    Write-Host "  Waiting for Ubuntu to install and SSH to come up..." -ForegroundColor White
     Write-Host "  (Ubuntu installation takes 5-15 minutes, please be patient)" -ForegroundColor DarkGray
+    Write-Host ""
 
     $sshReady = $false
     $maxWait = 180  # 180 x 10s = 30 minutes max
@@ -898,15 +899,18 @@ function Get-VmIpAndSsh {
             }
         } catch { }
 
-        # Show progress every minute
-        if ($i % 6 -eq 0) {
+        # Show progress every 30 seconds with VM state
+        if ($i % 3 -eq 0) {
             $min = [math]::Floor($i * 10 / 60)
-            Write-Host -NoNewline "`r    Waiting for SSH... ${min}min elapsed   "
+            $sec = ($i * 10) % 60
+            $vmState = (& $Vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState=')
+            $stateStr = if ($vmState) { $vmState -replace 'VMState=|"','' } else { 'unknown' }
+            Write-Host "  [${min}min ${sec}s] VM: $stateStr | SSH: not ready yet | Ubuntu instaluje sie..." -ForegroundColor DarkGray
         }
         Start-Sleep -Seconds 10
     }
 
-    Write-Host ""  # Clear progress line
+    Write-Host ""
 
     if ($sshReady) {
         Write-Check "SSH port open on ${sshHost}:${sshPort}"
