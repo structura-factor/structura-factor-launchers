@@ -130,11 +130,11 @@ function Write-Banner {
 
 function Write-Etap {
     param([int]$Number, [string]$Name)
-    $line = "[$Number/$TOTAL_ETAPY] $Name"
+    $line = "[${Number}/${TOTAL_ETAPY}] $Name"
     Write-Host ""
     Write-Host $line -ForegroundColor Cyan
     Write-Host ("=" * ($line.Length + 2)) -ForegroundColor DarkCyan
-    Write-Log "ETAP $Number/$TOTAL_ETAPY: $Name"
+    Write-Log "ETAP ${Number}/${TOTAL_ETAPY}: ${Name}"
 }
 
 function Write-Check {
@@ -314,11 +314,11 @@ function Show-HealthTable {
                     $lines += ""
                 }
                 'unhealthy' {
-                    $lines += "  $svcPadded [x] unhealthy ($elapsedStr/$timeoutStr)"
+                    $lines += "  $svcPadded [x] unhealthy (${elapsedStr}/${timeoutStr})"
                     $allHealthy = $false
                 }
                 'starting' {
-                    $lines += "  $svcPadded [$frame] starting... ($elapsedStr/$timeoutStr)"
+                    $lines += "  $svcPadded [$frame] starting... (${elapsedStr}/${timeoutStr})"
                     $allHealthy = $false
                 }
                 default {
@@ -366,7 +366,7 @@ function Invoke-WithRetry {
             return & $Action
         }
         catch {
-            Write-Log "$Description attempt $attempt/$MaxRetries failed: $_" -Level "WARN"
+            Write-Log "${Description} attempt ${attempt}/${MaxRetries} failed: $_" -Level "WARN"
             if ($attempt -lt $MaxRetries) {
                 $backoff = [math]::Pow(2, $attempt)
                 Start-Sleep -Seconds $backoff
@@ -1081,7 +1081,7 @@ function Invoke-ContainerDeployment {
     Write-Host ""
     $healthyCount = ($services.Values | Where-Object { $_.Status -eq 'healthy' }).Count
     $totalCount = $services.Count
-    Write-Check "Containers healthy: $healthyCount/$totalCount"
+    Write-Check "Containers healthy: ${healthyCount}/${totalCount}"
 
     return $true
 }
