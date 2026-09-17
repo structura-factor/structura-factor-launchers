@@ -709,27 +709,47 @@ function Invoke-VMCreation {
     } catch { }
 
     if ($vmExists) {
-        # Check if VM is running (OS already installed)
-        $isRunning = (& $vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState="running"')
-        if ($isRunning) {
-            Write-Check "VM $VM_NAME already running"
-        } else {
-            # VM exists but is off - check if OS was installed
-            $vmState = (& $vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState=')
-            $stateStr = $vmState.ToString().Split('=')[1].Trim('"')
-            Write-Host "  VM exists (state: $stateStr)" -ForegroundColor Yellow
-
-            # Delete old VM and recreate with unattended install
-            # (Previous VMs were created with broken config)
-            Write-Host "  Deleting old VM and recreating with unattended install..." -ForegroundColor White
-            & $vbox unregistervm $VM_NAME --delete 2>$null
-            Start-Sleep -Seconds 2
-            $vmExists = $false
-        }
-
-        if ($vmExists) {
-            # VM is running - detect IP and return
-            return Get-VmIpAndSsh -Vbox $vbox
+        $vmState = (& $vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState=')
+        $stateStr = $vmState.ToString().Split('=')[1].Trim('"')
+        
+        Write-Host ""
+        Write-Host "  VM $VM_NAME istnieje (stan: $stateStr)" -ForegroundColor Yellow
+        Write-Host "  Opcje:" -ForegroundColor White
+        Write-Host "    1. Usun i utworz na nowo (pelna reinstalacja)" -ForegroundColor DarkGray
+        Write-Host "    2. Uruchom istniejaca VM (jesli Ubuntu juz zainstalowane)" -ForegroundColor DarkGray
+        Write-Host "    3. Anuluj" -ForegroundColor DarkGray
+        Write-Host ""
+        $vmChoice = Read-Host "  Wybierz (1/2/3)"
+        
+        switch ($vmChoice) {
+            "1" {
+                Write-Host "  Zatrzymywanie i usuwanie starej VM..." -ForegroundColor White
+                & $vbox controlvm $VM_NAME poweroff 2>$null
+                Start-Sleep -Seconds 3
+                & $vbox unregistervm $VM_NAME --delete 2>$null
+                Start-Sleep -Seconds 2
+                $vmExists = $false
+                Write-Check "Stara VM usunieta"
+            }
+            "2" {
+                if ($stateStr -ne "running") {
+                    Write-Host "  Uruchamianie VM..." -ForegroundColor White
+                    & $vbox startvm $VM_NAME --type headless 2>$null
+                    
+                    # Open console window
+                    if (-not $Quiet) {
+                        $consoleScript = "Write-Host '=== STRUCTURA VM Console ($VM_NAME) ===' -ForegroundColor Cyan; Write-Host ''; Get-Content '$LOG_DIR\vm-console.log' -Wait -Tail 30"
+                        Start-Process powershell -ArgumentList "-NoExit","-Command",$consoleScript -WindowStyle Normal
+                    }
+                } else {
+                    Write-Check "VM juz dziala"
+                }
+                return Get-VmIpAndSsh -Vbox $vbox
+            }
+            default {
+                Write-Host "  Anulowano." -ForegroundColor Red
+                exit 1
+            }
         }
     }
 
