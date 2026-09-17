@@ -222,7 +222,7 @@ if ($EnableLUKS -and -not $LUKSPassword) {
 # --- Media ---
 Write-Host ""
 Write-Host "  === Media instalacyjne ===" -ForegroundColor Cyan
-Write-Host "  Potrzeba: Ubuntu 24.04 ISO (~2.5 GB) + VirtualBox 7.1.4 (~100 MB)" -ForegroundColor White
+Write-Host "  Potrzeba: Ubuntu 24.04 ISO (~3.1 GB) + VirtualBox 7.1.16 (~119 MB)" -ForegroundColor White
 Write-Host ""
 
 $localIso = "$MEDIA_DIR\$UBUNTU_ISO_NAME"
