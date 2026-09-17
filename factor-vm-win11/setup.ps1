@@ -865,7 +865,14 @@ function Invoke-VMCreation {
             Start-Sleep -Seconds 3
             Start-Process mstsc -ArgumentList "/v:localhost:5000"
 
-# VM runs headless - SSH via NAT port forwarding (localhost:2222)
+# VM runs headless (no GUI window, no input capture)
+        # Open Remote Desktop preview (separate window, non-blocking, closeable anytime)
+        if (-not $Quiet) {
+            Start-Sleep -Seconds 5
+            Start-Process mstsc -ArgumentList "/v:localhost:5000" -ErrorAction SilentlyContinue
+            Write-Host "  Podglad VM: Remote Desktop otworzony (localhost:5000)" -ForegroundColor DarkGray
+            Write-Host "  Mozesz zamknac okno podgladu w dowolnym momencie - VM bedzie dzialac dalej." -ForegroundColor DarkGray
+        }
 '@ | Out-File -FilePath $monitorFile -Encoding ASCII -Force
             Start-Process powershell -ArgumentList "-NoExit","-File",$monitorFile -WindowStyle Normal
         }
