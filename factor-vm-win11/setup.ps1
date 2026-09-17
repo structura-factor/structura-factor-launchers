@@ -755,7 +755,7 @@ function Invoke-VMCreation {
             "2" {
                 if ($stateStr -ne "running") {
                     Write-Host "  Uruchamianie VM..." -ForegroundColor White
-                    & $vbox startvm $VM_NAME --type headless 2>$null
+                    & $vbox startvm $VM_NAME --type gui 2>&1 | Out-Null
                     
                     # Open console window
                     if (-not $Quiet) {
@@ -831,7 +831,7 @@ function Invoke-VMCreation {
             Write-Host "    Trying minimal args..." -ForegroundColor Yellow
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
-            & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --time-zone=Europe/Warsaw --hostname=structura.local --start-vm=headless 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --time-zone=Europe/Warsaw --hostname=structura.local --start-vm=gui 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
             $unattendedExit = $LASTEXITCODE
             $ErrorActionPreference = $prevEAP
             Write-Log "Unattended install (minimal) exit code: $unattendedExit"
@@ -844,7 +844,7 @@ function Invoke-VMCreation {
         # Start VM if not already started by --start-vm
         $vmRunning = (& $vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState="running"')
         if (-not $vmRunning) {
-            & $vbox startvm $VM_NAME --type headless 2>$null
+            & $vbox startvm $VM_NAME --type gui 2>&1 | Out-Null
         }
 
         # Open Remote Desktop to see VM screen + status monitor
