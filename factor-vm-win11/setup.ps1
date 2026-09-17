@@ -773,6 +773,12 @@ function Invoke-VMCreation {
 
         # Start VM
         & $vbox startvm $VM_NAME --type headless 2>$null
+
+        # Open VM console in separate window for visibility
+        if (-not $Quiet) {
+            $consoleScript = "Write-Host '=== STRUCTURA VM Console (structura-sawaryn) ===' -ForegroundColor Cyan; Write-Host ''; Get-Content '$LOG_DIR\vm-console.log' -Wait -Tail 30"
+            Start-Process powershell -ArgumentList "-NoExit","-Command",$consoleScript -WindowStyle Normal
+        }
     }
 
     return Get-VmIpAndSsh -Vbox $vbox
