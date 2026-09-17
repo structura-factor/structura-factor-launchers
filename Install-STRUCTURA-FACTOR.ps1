@@ -219,6 +219,23 @@ if ($EnableLUKS -and -not $LUKSPassword) {
     exit 1
 }
 
+# --- VM power selection ---
+Write-Host ""
+Write-Host "  === Konfiguracja VM ===" -ForegroundColor Cyan
+Write-Host "  Wybierz moc maszyny wirtualnej:" -ForegroundColor White
+Write-Host "    1. Standard (4GB RAM, 2 vCPU) - dluzsza instalacja, mniej zasobow" -ForegroundColor DarkGray
+Write-Host "    2. Boost (8GB RAM, 6 vCPU) - szybsza instalacja, wiecej zasobow" -ForegroundColor DarkGray
+Write-Host ""
+$vmPower = Read-Host "  Wybierz (1/2, domyslnie 1)"
+if ($vmPower -eq "2") {
+    $VM_RAM = 8192
+    $VM_CPU = 6
+    Write-Host "  v Boost: 8GB RAM, 6 vCPU" -ForegroundColor Green
+} else {
+    Write-Host "  v Standard: 4GB RAM, 2 vCPU" -ForegroundColor Green
+}
+Write-Host ""
+
 # --- Media ---
 Write-Host ""
 Write-Host "  === Media instalacyjne ===" -ForegroundColor Cyan
