@@ -690,23 +690,14 @@ function Invoke-VMCreation {
 
     $vbox = Get-VBoxManage
     if (-not $vbox) {
-        # VBox was just installed but env not refreshed - try direct path check
         $defaultVBoxPath = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
         if (Test-Path $defaultVBoxPath) {
             $vbox = $defaultVBoxPath
-            Write-Check "VBoxManage found at default path (env not refreshed): $vbox"
-        } else {
-            $defaultVBoxPath86 = "C:\Program Files (x86)\Oracle\VirtualBox\VBoxManage.exe"
-            if (Test-Path $defaultVBoxPath86) {
-                $vbox = $defaultVBoxPath86
-                Write-Check "VBoxManage found at x86 path: $vbox"
-            }
+            Write-Check "VBoxManage found at default path: $vbox"
         }
     }
     if (-not $vbox) {
-        Write-Check "VBoxManage not found after install" -Fail
-        Write-Host "    VirtualBox may need a system restart to complete installation." -ForegroundColor Yellow
-        Write-Host "    Or install manually from: $vboxPath" -ForegroundColor Yellow
+        Write-Check "VBoxManage not found" -Fail
         throw "VBoxManage not available"
     }
 
@@ -718,101 +709,129 @@ function Invoke-VMCreation {
     } catch { }
 
     if ($vmExists) {
-        Write-Check "VM $VM_NAME already exists - skipping creation"
-        $vmState = (& $vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState=')
-        Write-Host "    State: $($vmState.ToString().Split('=')[1].Trim('"'))"
-
-        # Ensure VM is running
+        # Check if VM is running (OS already installed)
         $isRunning = (& $vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState="running"')
-        if (-not $isRunning) {
-            Write-Host "  Starting VM..." -ForegroundColor White
-            & $vbox startvm $VM_NAME --type headless 2>$null
+        if ($isRunning) {
+            Write-Check "VM $VM_NAME already running"
+        } else {
+            # VM exists but is off - check if OS was installed
+            $vmState = (& $vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState=')
+            $stateStr = $vmState.ToString().Split('=')[1].Trim('"')
+            Write-Host "  VM exists (state: $stateStr)" -ForegroundColor Yellow
+
+            # Delete old VM and recreate with unattended install
+            # (Previous VMs were created with broken config)
+            Write-Host "  Deleting old VM and recreating with unattended install..." -ForegroundColor White
+            & $vbox unregistervm $VM_NAME --delete 2>$null
+            Start-Sleep -Seconds 2
+            $vmExists = $false
         }
 
+        if ($vmExists) {
+            # VM is running - detect IP and return
+            return Get-VmIpAndSsh -Vbox $vbox
+        }
+    }
+
+    if (-not $vmExists) {
+        Write-Host "  Creating VM: $VM_NAME ($VM_RAM MB RAM, $VM_CPU vCPU, $VM_DISK MB disk)" -ForegroundColor White
+
+        # Create VM
+        & $vbox createvm --name $VM_NAME --ostype Ubuntu_64 --register 2>$null
+        & $vbox modifyvm $VM_NAME --memory $VM_RAM --cpus $VM_CPU --nic1 bridged --boot1 dvd --boot2 disk
+        & $vbox modifyvm $VM_NAME --uart1 0x3F8 4 --uartmode1 file "$LOG_DIR\vm-console.log"
+
+        # Create disk
+        $diskPath = "$LOG_DIR\vm-disks\$VM_NAME.vdi"
+        $diskDir = Split-Path $diskPath
+        if (-not (Test-Path $diskDir)) {
+            New-Item -ItemType Directory -Path $diskDir -Force | Out-Null
+        }
+        if (-not (Test-Path $diskPath)) {
+            & $vbox createmedium disk --filename $diskPath --size $VM_DISK --format VDI 2>$null
+        }
+        & $vbox storagectl $VM_NAME --name "SATA" --add sata --controller IntelAhci 2>$null
+        & $vbox storageattach $VM_NAME --storagectl "SATA" --port 0 --device 0 --type hdd --medium $diskPath 2>$null
+
+        # Attach ISO
+        & $vbox storagectl $VM_NAME --name "IDE" --add ide 2>$null
+        & $vbox storageattach $VM_NAME --storagectl "IDE" --port 1 --device 0 --type dvddrive --medium $Media.IsoPath 2>$null
+
+        Write-Check "VM created: $VM_NAME"
+
+        # Use VBoxManage unattended install (VBox 7.0+)
+        Write-Host ""
+        Write-Host "  Starting unattended Ubuntu Server 24.04 LTS installation..." -ForegroundColor White
+        Write-Host "  (This takes 5-15 minutes. VBoxManage handles the installer automatically.)" -ForegroundColor DarkGray
+
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        & $vbox unattended install $VM_NAME --iso=$Media.IsoPath --user=structura --password=structura --full-user-name="STRUCTURA" --install-additions --time-zone=Europe/Warsaw --locale=pl_PL.UTF-8 --country=PL --hostname=structura.local 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        $ErrorActionPreference = $prevEAP
+
+        Write-Check "Unattended install started"
+
+        # Start VM
+        & $vbox startvm $VM_NAME --type headless 2>$null
+    }
+
+    return Get-VmIpAndSsh -Vbox $vbox
+}
+
+function Get-VmIpAndSsh {
+    param([string]$Vbox)
+
+    # Wait for VM to get IP (Ubuntu install takes 5-15 min)
+    Write-Host "  Waiting for VM to boot and get IP..." -ForegroundColor White
+    Write-Host "  (Ubuntu installation takes 5-15 minutes, please be patient)" -ForegroundColor DarkGray
+
+    $vmIp = $null
+    $maxWait = 120  # 120 x 15s = 30 minutes max
+    for ($i = 0; $i -lt $maxWait; $i++) {
+        try {
+            $ipInfo = & $Vbox guestproperty get $VM_NAME "/VirtualBox/GuestInfo/Net/0/V4/IP" 2>$null
+            if ($ipInfo -match 'Value:\s+(\d+\.\d+\.\d+\.\d+)') {
+                $vmIp = $Matches[1]
+                break
+            }
+        } catch { }
+
+        # Show progress every minute
+        if ($i % 4 -eq 0) {
+            $min = [math]::Floor($i * 15 / 60)
+            Write-Host -NoNewline "`r    Waiting for IP... ${min}min elapsed   "
+        }
+        Start-Sleep -Seconds 15
+    }
+
+    Write-Host ""  # Clear progress line
+
+    if ($vmIp) {
+        Write-Check "VM IP: $vmIp"
+    } else {
+        Write-Check "Could not determine VM IP after 30 minutes" -Warn
+        Write-Host "    Check VM console: $LOG_DIR\vm-console.log" -ForegroundColor Yellow
         return @{ VmExists = $true; VmIp = $null }
     }
 
-    Write-Host "  Creating VM: $VM_NAME ($VM_RAM MB RAM, $VM_CPU vCPU, $VM_DISK MB disk)" -ForegroundColor White
-
-    # Create VM
-    & $vbox createvm --name $VM_NAME --ostype Ubuntu_64 --register 2>$null
-    & $vbox modifyvm $VM_NAME --memory $VM_RAM --cpus $VM_CPU --nic1 bridged --boot1 dvd --boot2 disk
-    & $vbox modifyvm $VM_NAME --uart1 0x3F8 4 --uartmode1 file "$LOG_DIR\vm-console.log"
-
-    # Create disk
-    $diskPath = "$LOG_DIR\vm-disks\$VM_NAME.vdi"
-    $diskDir = Split-Path $diskPath
-    if (-not (Test-Path $diskDir)) {
-        New-Item -ItemType Directory -Path $diskDir -Force | Out-Null
-    }
-    if (-not (Test-Path $diskPath)) {
-        & $vbox createmedium disk --filename $diskPath --size $VM_DISK --format VDI 2>$null
-    }
-    & $vbox storagectl $VM_NAME --name "SATA" --add sata --controller IntelAhci 2>$null
-    & $vbox storageattach $VM_NAME --storagectl "SATA" --port 0 --device 0 --type hdd --medium $diskPath 2>$null
-
-    # Attach ISO
-    & $vbox storagectl $VM_NAME --name "IDE" --add ide 2>$null
-    & $vbox storageattach $VM_NAME --storagectl "IDE" --port 1 --device 0 --type dvddrive --medium $Media.IsoPath 2>$null
-
-    # Copy unattend XML to VM (via guest properties for cloud-init)
-    # The unattend XML is embedded in the ISO or provided via guest properties
-
-    Write-Check "VM created: $VM_NAME"
-
-    # Start VM and install Ubuntu (unattended)
-    Write-Host ""
-    Write-Host "  Installing Ubuntu Server 24.04 LTS..." -ForegroundColor White
-    Write-Host "  (This takes 5-10 minutes. Cloud-init configures the system.)" -ForegroundColor DarkGray
-
-    & $vbox startvm $VM_NAME --type headless 2>$null
-
-    # Wait for VM to be running and show spinner
-    $spinnerResult = Show-Spinner -Description "Ubuntu installer: installing base system..." -TimeoutSec 600 -Action {
-        Start-Sleep -Seconds 5
-        return $true
-    }
-
-    # Wait for VM to get IP
-    Write-Host "  Waiting for VM IP address..." -ForegroundColor White
-    $vmIp = $null
-    for ($i = 0; $i -lt 60; $i++) {
+    # Wait for SSH (port 22 - unattended install uses default port)
+    Write-Host "  Waiting for SSH..." -ForegroundColor White
+    $sshReady = $false
+    for ($i = 0; $i -lt 30; $i++) {
         try {
-            $ipInfo = & $vbox guestproperty get $VM_NAME "/VirtualBox/GuestInfo/Net/0/V4/IP" 2>$null
-            if ($ipInfo -match 'Value:\s+(\d+\.\d+\.\d+\.\d+)') {
-                $vmIp = $Matches[1]
+            $testConn = Test-NetConnection -ComputerName $vmIp -Port 22 -WarningAction SilentlyContinue
+            if ($testConn.TcpTestSucceeded) {
+                $sshReady = $true
                 break
             }
         } catch { }
         Start-Sleep -Seconds 10
     }
 
-    if ($vmIp) {
-        Write-Check "VM IP: $vmIp"
+    if ($sshReady) {
+        Write-Check "SSH ready on port 22"
     } else {
-        Write-Check "Could not determine VM IP (check VM console)" -Warn
-    }
-
-    # Wait for SSH to be available (port 2222)
-    if ($vmIp) {
-        Write-Host "  Waiting for SSH (port 2222)..." -ForegroundColor White
-        $sshReady = $false
-        for ($i = 0; $i -lt 30; $i++) {
-            try {
-                $testConn = Test-NetConnection -ComputerName $vmIp -Port 2222 -WarningAction SilentlyContinue
-                if ($testConn.TcpTestSucceeded) {
-                    $sshReady = $true
-                    break
-                }
-            } catch { }
-            Start-Sleep -Seconds 10
-        }
-
-        if ($sshReady) {
-            Write-Check "SSH ready on port 2222"
-        } else {
-            Write-Check "SSH not ready yet (cloud-init may still be running)" -Warn
-        }
+        Write-Check "SSH not ready yet" -Warn
     }
 
     return @{ VmExists = $true; VmIp = $vmIp }
@@ -831,7 +850,7 @@ function Invoke-DockerSetup {
     }
 
     $sshTarget = "structura@$VmIp"
-    $sshPort = 2222
+    $sshPort = 22
 
     # Guard: check if Docker already installed
     Write-Host "  Checking Docker on VM..." -ForegroundColor White
@@ -904,7 +923,7 @@ function Invoke-RepoAndAppdata {
     }
 
     $sshTarget = "structura@$VmIp"
-    $sshPort = 2222
+    $sshPort = 22
 
     # Guard: check if repos already cloned
     $repoCheck = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget "test -d /opt/structura/repos/structura-core && echo EXISTS || echo MISSING" 2>$null
@@ -1005,7 +1024,7 @@ function Invoke-ContainerDeployment {
     param([string]$VmIp)
 
     $sshTarget = "structura@$VmIp"
-    $sshPort = 2222
+    $sshPort = 22
 
     # Prepare .env from client template
     Write-Host "  Preparing .env from client template..." -ForegroundColor White
@@ -1134,7 +1153,7 @@ function Invoke-HindsightAndConfig {
     param([string]$VmIp)
 
     $sshTarget = "structura@$VmIp"
-    $sshPort = 2222
+    $sshPort = 22
 
     # Init Hindsight banks
     Write-Host "  Initializing Hindsight banks..." -ForegroundColor White
@@ -1174,7 +1193,7 @@ function Invoke-PostSetup {
     param([string]$VmIp)
 
     $sshTarget = "structura@$VmIp"
-    $sshPort = 2222
+    $sshPort = 22
 
     # --- Duplicati backup schedule ---
     Write-Host "  Configuring Duplicati backup schedule..." -ForegroundColor White
@@ -1394,7 +1413,7 @@ function Invoke-LUKS {
     }
 
     $sshTarget = "structura@$VmIp"
-    $sshPort = 2222
+    $sshPort = 22
 
     $luksCmd = @"
         # LUKS encryption setup (simplified - in production use cryptsetup)
