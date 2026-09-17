@@ -898,6 +898,9 @@ function Invoke-VMCreation {
             "echo '$pubKey' >> /home/structura/.ssh/authorized_keys" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
             "chmod 600 /home/structura/.ssh/authorized_keys" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
             "chown -R structura:structura /home/structura/.ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
+            "systemctl enable ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
+            "systemctl start ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
+            "reboot" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
             & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local --post-install-command="/bin/bash $postInstallScript" 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
         } else {
             & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
@@ -966,6 +969,9 @@ function Get-VmIpAndSsh {
         try {
             $testConn = Test-NetConnection -ComputerName $sshHost -Port $sshPort -WarningAction SilentlyContinue
             if ($testConn.TcpTestSucceeded) {
+                # Port is open - but SSH might not be ready (Connection reset)
+                # Wait a bit and try actual SSH
+                Start-Sleep -Seconds 5
                 $sshReady = $true
                 break
             }
@@ -977,7 +983,7 @@ function Get-VmIpAndSsh {
             $sec = ($i * 10) % 60
             $vmState = (& $Vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState=')
             $stateStr = if ($vmState) { $vmState -replace 'VMState=|"','' } else { 'unknown' }
-            Write-Host "  [${min}min ${sec}s] VM: $stateStr | SSH: not ready yet | Ubuntu instaluje sie..." -ForegroundColor DarkGray
+            Write-Host "  [${min}min ${sec}s] VM: $stateStr | Czekam na SSH..." -ForegroundColor DarkGray
         }
         Start-Sleep -Seconds 10
     }
@@ -994,7 +1000,7 @@ function Get-VmIpAndSsh {
         $sshStable = $false
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
-        for ($i = 0; $i -lt 90; $i++) {
+        for ($i = 0; $i -lt 60; $i++) {
             try {
                 $sshTest = ssh -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=10 -o BatchMode=yes -i "$env:USERPROFILE\.ssh\id_ed25519" $sshHost "echo SSH_OK" 2>&1
                 if ($sshTest -match 'SSH_OK') {
