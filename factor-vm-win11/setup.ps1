@@ -793,9 +793,6 @@ function Invoke-VMCreation {
         & $vbox modifyvm $VM_NAME --natpf1 "ssh,tcp,,2222,,22" 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --natpf1 "http,tcp,,8080,,80" 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --natpf1 "https,tcp,,8443,,443" 2>&1 | Out-Null
-        # VRDE for Remote Desktop preview (view-only, non-blocking)
-        & $vbox modifyvm $VM_NAME --vrde on --vrdeport 5000 --vrde-auth-type null 2>&1 | Out-Null
-
         # Create disk
         $diskPath = "$LOG_DIR\vm-disks\$VM_NAME.vdi"
         $diskDir = Split-Path $diskPath
@@ -826,7 +823,21 @@ function Invoke-VMCreation {
         $isoFilePath = $Media['IsoPath']
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
-        & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        # Get the public key from the deploy key for SSH key auth
+        $pubKey = ""
+        if ($DeployKeyPath -and (Test-Path $DeployKeyPath)) {
+            $pubKey = (ssh-keygen -y -f $DeployKeyPath 2>$null)
+        }
+        $postInstallCmd = if ($pubKey) {
+            "mkdir -p /home/structura/.ssh && echo '$pubKey' >> /home/structura/.ssh/authorized_keys && chmod 600 /home/structura/.ssh/authorized_keys && chown -R structura:structura /home/structura/.ssh"
+        } else {
+            ""
+        }
+        if ($postInstallCmd) {
+            & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local --post-install-command="$postInstallCmd" 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        } else {
+            & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        }
         $unattendedExit = $LASTEXITCODE
         $ErrorActionPreference = $prevEAP
         Write-Log "Unattended install exit code: $unattendedExit"
@@ -859,13 +870,7 @@ function Invoke-VMCreation {
         }
 
 
-        # VM runs headless (no GUI window, no input capture, no notifications)
-        # Open Remote Desktop preview (separate non-blocking window, closeable anytime)
-        if (-not $Quiet) {
-            Start-Sleep -Seconds 5
-            Start-Process mstsc -ArgumentList "/v:localhost:5000" -ErrorAction SilentlyContinue
-            Write-Host "  Podglad VM: Remote Desktop (localhost:5000) - okno mozna zamknac w dowolnym momencie." -ForegroundColor DarkGray
-        }
+# VM runs headless - SSH via NAT port forwarding (localhost:2222)
     }
 
     return Get-VmIpAndSsh -Vbox $vbox
@@ -904,8 +909,27 @@ function Get-VmIpAndSsh {
     Write-Host ""  # Clear progress line
 
     if ($sshReady) {
-        Write-Check "SSH ready on ${sshHost}:${sshPort}"
-        # Return 127.0.0.1 as the "IP" - all SSH connections use localhost with port forwarding
+        Write-Check "SSH port open on ${sshHost}:${sshPort}"
+        # Wait for SSH to be fully ready (handshake can fail right after boot)
+        Write-Host "  Waiting for SSH to be fully ready..." -ForegroundColor White
+        $sshStable = $false
+        for ($i = 0; $i -lt 12; $i++) {
+            try {
+                $sshTest = ssh -p $sshPort -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes $sshHost "echo SSH_OK" 2>$null
+                if ($sshTest -match 'SSH_OK') {
+                    $sshStable = $true
+                    break
+                }
+            } catch { }
+            Start-Sleep -Seconds 10
+        }
+        if ($sshStable) {
+            Write-Check "SSH ready on ${sshHost}:${sshPort}"
+        } else {
+            # SSH port is open but handshake fails - might need password auth
+            # Try with password
+            Write-Check "SSH port open, trying with password..." -Warn
+        }
         return @{ VmExists = $true; VmIp = $sshHost }
     } else {
         Write-Check "SSH not ready after 30 minutes" -Warn
