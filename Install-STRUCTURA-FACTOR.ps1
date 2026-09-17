@@ -22,7 +22,7 @@ $ErrorActionPreference = 'Stop'
 # --- Stale ---
 $CLIENT = "sawaryn"
 $LAUNCHER_REPO = "structura-factor/structura-factor-launchers"
-$BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@fd9192fd1ee7a0db68d26be7c2fe440fc017e1ec/bootstrap.ps1"
+$BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@34fab2945790df26e1a71cef4631b442965616d9/bootstrap.ps1"
 $BASE_DIR = $InstallPath
 $KEYS_DIR = "$BASE_DIR\klucze"
 $MEDIA_DIR = "$BASE_DIR\media"
@@ -47,6 +47,17 @@ Write-Host "|  Klient: Sawaryn i Partnerzy                                |" -Fo
 Write-Host "|  Folder: $InstallPath                                        |" -ForegroundColor White
 Write-Host "+============================================================+" -ForegroundColor Cyan
 Write-Host ""
+
+# --- Pytanie o sciezke instalacyjna ---
+if (-not $InstallPath -or $InstallPath -eq "C:\STRUCTURA") {
+    Write-Host "  Domyslny folder instalacyjny: C:\STRUCTURA" -ForegroundColor White
+    Write-Host "  Nacisnij Enter aby zaakceptowac, lub wpisz inna sciezke (np. D:\STRUCTURA)" -ForegroundColor DarkGray
+    Write-Host ""
+    $pathInput = Read-Host "  Sciezka instalacyjna (lub Enter)"
+    if ($pathInput -and $pathInput.Trim() -ne "") {
+        $InstallPath = $pathInput.Trim().Trim('"').Trim("'")
+    }
+}
 
 # --- Struktura folderow ---
 Write-Host "  > Tworzenie struktury folderow..." -ForegroundColor Cyan
