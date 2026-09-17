@@ -180,8 +180,9 @@ Write-Host "  v RAM: $totalRAM GB" -ForegroundColor Green
 W-Log "RAM: $totalRAM GB"
 
 # --- Dysk ---
-Write-Host "  > Sprawdzanie wolnego miejsca na C:..." -ForegroundColor Cyan
-$freeGB = [math]::Round((Get-PSDrive -Name C).Free / 1GB)
+Write-Host "  > Sprawdzanie wolnego miejsca na dysku..." -ForegroundColor Cyan
+$installDrive = $InstallPath.Substring(0,1)
+    $freeGB = [math]::Round((Get-PSDrive -Name $installDrive).Free / 1GB)
 $needGB = [math]::Round($VM_DISK / 1024) + 10
 if ($freeGB -lt $needGB) {
     Write-Host "  ! Wolne miejsce: $freeGB GB (zalecane $needGB GB)" -ForegroundColor Yellow
