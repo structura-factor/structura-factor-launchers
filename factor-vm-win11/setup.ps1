@@ -724,8 +724,12 @@ function Invoke-VMCreation {
         switch ($vmChoice) {
             "1" {
                 Write-Host "  Zatrzymywanie i usuwanie starej VM..." -ForegroundColor White
-                & $vbox controlvm $VM_NAME poweroff 2>$null
-                Start-Sleep -Seconds 3
+                # Only poweroff if VM is running (controlvm fails if VM is off)
+                $isVmRunning = (& $vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState="running"')
+                if ($isVmRunning) {
+                    & $vbox controlvm $VM_NAME poweroff 2>$null
+                    Start-Sleep -Seconds 3
+                }
                 & $vbox unregistervm $VM_NAME --delete 2>$null
                 Start-Sleep -Seconds 2
                 $vmExists = $false
