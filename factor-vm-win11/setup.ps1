@@ -858,23 +858,13 @@ function Invoke-VMCreation {
             & $vbox startvm $VM_NAME --type headless 2>&1 | Out-Null
         }
 
-        # Open Remote Desktop to see VM screen + status monitor
-        if (-not $Quiet) {
-            # VRDE was enabled via modifyvm during VM creation
-            # Open Remote Desktop to see VM screen
-            Start-Sleep -Seconds 3
-            Start-Process mstsc -ArgumentList "/v:localhost:5000"
 
-# VM runs headless (no GUI window, no input capture)
-        # Open Remote Desktop preview (separate window, non-blocking, closeable anytime)
+        # VM runs headless (no GUI window, no input capture, no notifications)
+        # Open Remote Desktop preview (separate non-blocking window, closeable anytime)
         if (-not $Quiet) {
             Start-Sleep -Seconds 5
             Start-Process mstsc -ArgumentList "/v:localhost:5000" -ErrorAction SilentlyContinue
-            Write-Host "  Podglad VM: Remote Desktop otworzony (localhost:5000)" -ForegroundColor DarkGray
-            Write-Host "  Mozesz zamknac okno podgladu w dowolnym momencie - VM bedzie dzialac dalej." -ForegroundColor DarkGray
-        }
-'@ | Out-File -FilePath $monitorFile -Encoding ASCII -Force
-            Start-Process powershell -ArgumentList "-NoExit","-File",$monitorFile -WindowStyle Normal
+            Write-Host "  Podglad VM: Remote Desktop (localhost:5000) - okno mozna zamknac w dowolnym momencie." -ForegroundColor DarkGray
         }
     }
 
