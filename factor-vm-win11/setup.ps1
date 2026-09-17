@@ -928,6 +928,14 @@ function Invoke-VMCreation {
             & $vbox startvm $VM_NAME --type headless 2>&1 | Out-Null
         }
 
+        # If Extension Pack is installed, enable VRDE and open Remote Desktop preview
+        $extpackReady = (& $vbox list extpacks 2>$null | Select-String "Oracle VM VirtualBox Extension Pack")
+        if ($extpackReady -and -not $Quiet) {
+            Start-Sleep -Seconds 3
+            Start-Process mstsc -ArgumentList "/v:localhost:5000" -ErrorAction SilentlyContinue
+            Write-Host "  Podglad VM: Remote Desktop (localhost:5000) - okno mozna zamknac w dowolnym momencie." -ForegroundColor DarkGray
+        }
+
 
 # VM runs headless - SSH via NAT port forwarding (localhost:2222)
     }
