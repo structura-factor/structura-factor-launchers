@@ -651,20 +651,6 @@ function Invoke-MediaSourcing {
             # Clean up extracted files
             if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
 
-            # Install VirtualBox Extension Pack (required for VRDE/Remote Desktop)
-            $extpackUrl = "https://download.virtualbox.org/virtualbox/7.1.16/Oracle_VirtualBox_Extension_Pack-7.1.16.vbox-extpack"
-            $extpackPath = "$mediaDir\Oracle_VirtualBox_Extension_Pack-7.1.16.vbox-extpack"
-            if (-not (Test-Path $extpackPath)) {
-                Write-Host "  Downloading Extension Pack (~22MB)..." -ForegroundColor White
-                Invoke-WebRequest -Uri $extpackUrl -OutFile $extpackPath -UseBasicParsing -TimeoutSec 120
-            }
-            Write-Host "  Installing Extension Pack..." -ForegroundColor White
-            $prevEAP = $ErrorActionPreference
-            $ErrorActionPreference = 'Continue'
-            & $vbox extpack install --replace $extpackPath 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
-            $ErrorActionPreference = $prevEAP
-            Write-Check "Extension Pack installed (VRDE enabled)"
-
             # Refresh environment variables
             $env:VBOX_INSTALL_PATH = [System.Environment]::GetEnvironmentVariable("VBOX_INSTALL_PATH", "Machine")
             $env:VBOX_MSI_INSTALL_PATH = [System.Environment]::GetEnvironmentVariable("VBOX_MSI_INSTALL_PATH", "Machine")
@@ -755,7 +741,7 @@ function Invoke-VMCreation {
             "2" {
                 if ($stateStr -ne "running") {
                     Write-Host "  Uruchamianie VM..." -ForegroundColor White
-                    & $vbox startvm $VM_NAME --type gui 2>&1 | Out-Null
+                    & $vbox startvm $VM_NAME --type headless 2>&1 | Out-Null
                     
                     # Open console window
                     if (-not $Quiet) {
@@ -783,7 +769,6 @@ function Invoke-VMCreation {
         & $vbox createvm --name $VM_NAME --ostype Ubuntu_64 --register 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --memory $VM_RAM --cpus $VM_CPU --nic1 nat --boot1 dvd --boot2 disk 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --uart1 0x3F8 4 --uartmode1 file "$LOG_DIR\vm-console.log" 2>&1 | Out-Null
-        & $vbox modifyvm $VM_NAME --vrde on --vrdeport 5000 --vrde-auth-type null 2>&1 | Out-Null
         # NAT port forwarding: host:2222 -> guest:22 (SSH), host:8080 -> guest:80, host:8443 -> guest:443
         & $vbox modifyvm $VM_NAME --natpf1 "ssh,tcp,,2222,,22" 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --natpf1 "http,tcp,,8080,,80" 2>&1 | Out-Null
@@ -848,7 +833,7 @@ function Invoke-VMCreation {
         # Start VM if not already started by --start-vm
         $vmRunning = (& $vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState="running"')
         if (-not $vmRunning) {
-            & $vbox startvm $VM_NAME --type gui 2>&1 | Out-Null
+            & $vbox startvm $VM_NAME --type headless 2>&1 | Out-Null
         }
 
         # Open Remote Desktop to see VM screen + status monitor
