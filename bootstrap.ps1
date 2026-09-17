@@ -26,6 +26,15 @@ param(
     [string]$ClientRepo = "structura-factor/structura-clients-sawaryn",
 
     [Parameter(Mandatory = $false)]
+    [int]$VM_RAM,
+
+    [Parameter(Mandatory = $false)]
+    [int]$VM_CPU,
+
+    [Parameter(Mandatory = $false)]
+    [int]$VM_DISK,
+
+    [Parameter(Mandatory = $false)]
     [switch]$Quiet
     # -Verbose provided by CmdletBinding automatically
 )
@@ -306,6 +315,9 @@ Write-StructuraLog "Launcher files staged in $launcherDir"
 $setupArgs = @("-Client", $Client)
 if ($DeployKeyPath) { $setupArgs += @("-DeployKeyPath", $DeployKeyPath) }
 if ($MediaPath) { $setupArgs += @("-MediaPath", $MediaPath) }
+if ($VM_RAM) { $setupArgs += @("-VM_RAM", $VM_RAM) }
+if ($VM_CPU) { $setupArgs += @("-VM_CPU", $VM_CPU) }
+if ($VM_DISK) { $setupArgs += @("-VM_DISK", $VM_DISK) }
 if ($Quiet) { $setupArgs += "-Quiet" }
 if ($PSBoundParameters.ContainsKey("Verbose")) { $setupArgs += "-Verbose" }
 
