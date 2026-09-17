@@ -259,6 +259,16 @@ if ($hasLocal) {
             New-Item -ItemType Directory -Path $MediaCachePath -Force | Out-Null
         }
         Write-Host "  v Cache: $MediaCachePath" -ForegroundColor Green
+        # Re-check: does media exist in the cache path the user just entered?
+        $cacheIso = "$MediaCachePath\$UBUNTU_ISO_NAME"
+        $cacheVbox = "$MediaCachePath\$VBOX_INSTALLER_NAME"
+        if ((Test-Path $cacheIso) -and (Test-Path $cacheVbox)) {
+            Write-Host "  v Media znalezione w cache - kopiowanie do folderu lokalnego..." -ForegroundColor Green
+            Copy-Item $cacheIso $localIso -Force
+            Copy-Item $cacheVbox $localVbox -Force
+            Write-Host "  v Skopiowane" -ForegroundColor Green
+            $hasLocal = $true
+        }
     } else {
         Write-Host "  Tylko lokalnie: $MEDIA_DIR" -ForegroundColor DarkGray
     }
