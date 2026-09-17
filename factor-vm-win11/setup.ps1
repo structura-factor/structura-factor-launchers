@@ -651,6 +651,20 @@ function Invoke-MediaSourcing {
             # Clean up extracted files
             if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
 
+            # Install VirtualBox Extension Pack (required for VRDE/Remote Desktop)
+            $extpackUrl = "https://download.virtualbox.org/virtualbox/7.1.16/Oracle_VirtualBox_Extension_Pack-7.1.16.vbox-extpack"
+            $extpackPath = "$mediaDir\Oracle_VirtualBox_Extension_Pack-7.1.16.vbox-extpack"
+            if (-not (Test-Path $extpackPath)) {
+                Write-Host "  Downloading Extension Pack (~22MB)..." -ForegroundColor White
+                Invoke-WebRequest -Uri $extpackUrl -OutFile $extpackPath -UseBasicParsing -TimeoutSec 120
+            }
+            Write-Host "  Installing Extension Pack..." -ForegroundColor White
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            & $vbox extpack install --replace $extpackPath 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            $ErrorActionPreference = $prevEAP
+            Write-Check "Extension Pack installed (VRDE enabled)"
+
             # Refresh environment variables
             $env:VBOX_INSTALL_PATH = [System.Environment]::GetEnvironmentVariable("VBOX_INSTALL_PATH", "Machine")
             $env:VBOX_MSI_INSTALL_PATH = [System.Environment]::GetEnvironmentVariable("VBOX_MSI_INSTALL_PATH", "Machine")
@@ -832,33 +846,30 @@ function Invoke-VMCreation {
             & $vbox startvm $VM_NAME --type headless 2>$null
         }
 
-        # Open VM monitor in separate window - shows live status + screenshots
+        # Enable VRDE and open Remote Desktop preview + status monitor
         if (-not $Quiet) {
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            & $vbox modifyvm $VM_NAME --vrde on --vrdeport 5000 --vrde-auth-type null 2>&1 | Out-Null
+            $ErrorActionPreference = $prevEAP
+
+            # Open Remote Desktop to see VM screen
+            Start-Process mstsc -ArgumentList "/v:localhost:5000"
+
+            # Open status monitor in separate window
             $monitorScript = @"
-`$vbox = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
 Write-Host '=== STRUCTURA VM Monitor ===' -ForegroundColor Cyan
-Write-Host 'VM: $VM_NAME' -ForegroundColor White
+Write-Host 'VM: $VM_NAME  |  Remote Desktop: localhost:5000' -ForegroundColor White
 Write-Host ''
-`$shotDir = "C:\structura\vm-screenshots"
-if (-not (Test-Path `$shotDir)) { New-Item -ItemType Directory -Path `$shotDir -Force | Out-Null }
 while (`$true) {
+    `$vbox = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
     `$state = (& `$vbox showvminfo $VM_NAME --machinereadable 2>`$null | Select-String 'VMState=')
     `$stateStr = if (`$state) { `$state -replace 'VMState=|"','' } else { 'unknown' }
     `$ip = (& `$vbox guestproperty get $VM_NAME "/VirtualBox/GuestInfo/Net/0/V4/IP" 2>`$null)
     `$ipStr = if (`$ip -match 'Value:\s+(\d+\.\d+\.\d+\.\d+)') { `$Matches[1] } else { 'no IP yet' }
     `$ts = Get-Date -Format 'HH:mm:ss'
     Write-Host "`r[`$ts] State: `$stateStr  IP: `$ipStr    " -NoNewline -ForegroundColor Green
-    # Take screenshot every 30 seconds
-    `$shotFile = "`$shotDir\screen.png"
-    & `$vbox controlvm $VM_NAME screenshotpng `$shotFile 2>`$null
-    if (Test-Path `$shotFile) {
-        # Open screenshot in default viewer every 60s (overwrite = refresh)
-        `$age = ((Get-Date) - (Get-Item `$shotFile).LastWriteTime).TotalSeconds
-        if (`$age -lt 1) {
-           Invoke-Item `$shotFile
-        }
-    }
-    Start-Sleep -Seconds 10
+    Start-Sleep -Seconds 5
 }
 "@
             Start-Process powershell -ArgumentList "-NoExit","-Command",$monitorScript -WindowStyle Normal
