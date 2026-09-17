@@ -593,15 +593,20 @@ function Invoke-MediaSourcing {
     if (-not $Preflight.VBoxOK) {
         # Need to install VirtualBox
         $vboxUrl = "https://download.virtualbox.org/virtualbox/7.1.16/$VBOX_INSTALLER_NAME"
-        Write-Host "  Downloading VirtualBox installer (~119MB)..." -ForegroundColor White
 
         try {
-            if ($Quiet) {
-                Invoke-WebRequest -Uri $vboxUrl -OutFile $vboxPath -UseBasicParsing -TimeoutSec 300
+            # Skip download if installer already exists locally (from OneDrive or previous run)
+            if (Test-Path $vboxPath) {
+                Write-Check "VirtualBox: installer already exists ($vboxPath)"
             } else {
-                Show-DownloadBar -Url $vboxUrl -Destination $vboxPath -Description "VirtualBox installer"
+                Write-Host "  Downloading VirtualBox installer (~119MB)..." -ForegroundColor White
+                if ($Quiet) {
+                    Invoke-WebRequest -Uri $vboxUrl -OutFile $vboxPath -UseBasicParsing -TimeoutSec 300
+                } else {
+                    Show-DownloadBar -Url $vboxUrl -Destination $vboxPath -Description "VirtualBox installer"
+                }
+                Write-Check "VirtualBox: downloaded"
             }
-            Write-Check "VirtualBox: downloaded"
 
             # Install VirtualBox - extract MSI from wrapper exe, then install via msiexec
             # VBox 7.1+ wrapper exe does NOT support -silent/--silent (exit 2)
