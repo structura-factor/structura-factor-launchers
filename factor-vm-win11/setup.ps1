@@ -981,6 +981,8 @@ function Get-VmIpAndSsh {
         }
         
         $sshStable = $false
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
         for ($i = 0; $i -lt 12; $i++) {
             try {
                 if ($pubKey) {
@@ -1009,6 +1011,7 @@ function Get-VmIpAndSsh {
             Start-Sleep -Seconds 10
         }
         
+        $ErrorActionPreference = $prevEAP
         if (-not $sshStable) {
             Write-Check "SSH not fully ready" -Warn
         }
