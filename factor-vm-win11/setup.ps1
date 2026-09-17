@@ -836,7 +836,7 @@ function Invoke-VMCreation {
         if (-not $Quiet) {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
-            & $vbox modifyvm $VM_NAME --vrde on --vrdeport 5000 --vrde-auth-type null 2>&1 | Out-Null
+            & $vbox controlvm $VM_NAME vrde on 2>&1 | Out-Null
             $ErrorActionPreference = $prevEAP
             
             # Open status monitor in separate window
