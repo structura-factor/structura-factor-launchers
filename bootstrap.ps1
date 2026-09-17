@@ -260,14 +260,14 @@ if (-not $launcherName) {
 
 Write-StructuraLog "Launcher: $launcherName"
 
-# Step 4: Fetch setup.bat from launcher repo
+# Step 4: Fetch setup.bat from launcher repo (optional - jsDelivr blocks .bat files)
 $setupBatUrl = "$GITHUB_RAW_BASE/$LauncherRepo/$launcherName/setup.bat"
 $setupBatPath = [System.IO.Path]::GetTempFileName()
 $downloaded = Invoke-SafeDownload -Url $setupBatUrl -Destination $setupBatPath -TimeoutSec $DOWNLOAD_TIMEOUT_SEC
 
 if (-not $downloaded) {
-    Write-StructuraLog "Failed to fetch setup.bat from launcher." -Level "ERROR"
-    exit 1
+    Write-StructuraLog "setup.bat not available (CDN blocks .bat files) - skipping, setup.ps1 will be used directly" -Level "WARN"
+    $setupBatPath = $null
 }
 
 # Step 5: Fetch setup.ps1 from launcher repo
@@ -296,7 +296,7 @@ if (-not (Test-Path $launcherDir)) {
     New-Item -ItemType Directory -Path $launcherDir -Force | Out-Null
 }
 
-Copy-Item $setupBatPath "$launcherDir\setup.bat" -Force
+if ($setupBatPath) { Copy-Item $setupBatPath "$launcherDir\setup.bat" -Force }
 Copy-Item $setupPs1Path "$launcherDir\setup.ps1" -Force
 if (Test-Path $unattendPath) {
     Copy-Item $unattendPath "$launcherDir\ubuntu-unattend.xml" -Force
@@ -333,6 +333,6 @@ Write-StructuraLog "=== Bootstrap complete ==="
 
 # Cleanup temp files
 Remove-Item $tempClone -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item $setupBatPath -Force -ErrorAction SilentlyContinue
+if ($setupBatPath) { Remove-Item $setupBatPath -Force -ErrorAction SilentlyContinue }
 Remove-Item $setupPs1Path -Force -ErrorAction SilentlyContinue
 Remove-Item $unattendPath -Force -ErrorAction SilentlyContinue
