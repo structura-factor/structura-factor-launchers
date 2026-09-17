@@ -528,7 +528,7 @@ function Invoke-MediaSourcing {
     if (-not $isoExists) {
         $isoUrl = "https://releases.ubuntu.com/24.04/$UBUNTU_ISO_NAME"
         Write-Host ""
-        Write-Host "  Downloading Ubuntu ISO (~2.5GB, est. 5-15 min depending on bandwidth)" -ForegroundColor White
+        Write-Host "  Downloading Ubuntu ISO (~3.1GB, est. 5-15 min depending on bandwidth)" -ForegroundColor White
         Write-Host ""
 
         $downloaded = $false
@@ -585,7 +585,7 @@ function Invoke-MediaSourcing {
     if (-not $vboxExists -and -not $Preflight.VBoxOK) {
         # Need to install VirtualBox
         $vboxUrl = "https://download.virtualbox.org/virtualbox/7.1.16/$VBOX_INSTALLER_NAME"
-        Write-Host "  Downloading VirtualBox installer (~100MB)..." -ForegroundColor White
+        Write-Host "  Downloading VirtualBox installer (~119MB)..." -ForegroundColor White
 
         try {
             if ($Quiet) {
