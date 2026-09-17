@@ -784,6 +784,10 @@ function Invoke-VMCreation {
         & $vbox modifyvm $VM_NAME --memory $VM_RAM --cpus $VM_CPU --nic1 nat --boot1 dvd --boot2 disk 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --uart1 0x3F8 4 --uartmode1 file "$LOG_DIR\vm-console.log" 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --vrde on --vrdeport 5000 --vrde-auth-type null 2>&1 | Out-Null
+        # NAT port forwarding: host:2222 -> guest:22 (SSH), host:8080 -> guest:80, host:8443 -> guest:443
+        & $vbox modifyvm $VM_NAME --natpf1 "ssh,tcp,,2222,,22" 2>&1 | Out-Null
+        & $vbox modifyvm $VM_NAME --natpf1 "http,tcp,,8080,,80" 2>&1 | Out-Null
+        & $vbox modifyvm $VM_NAME --natpf1 "https,tcp,,8443,,443" 2>&1 | Out-Null
 
         # Create disk
         $diskPath = "$LOG_DIR\vm-disks\$VM_NAME.vdi"
@@ -883,60 +887,45 @@ while ($true) {
 function Get-VmIpAndSsh {
     param([string]$Vbox)
 
-    # Wait for VM to get IP (Ubuntu install takes 5-15 min)
-    Write-Host "  Waiting for VM to boot and get IP..." -ForegroundColor White
+    # With NAT port forwarding, we connect to localhost:2222 (not guest IP)
+    # This works without Guest Additions / guestproperty
+    $sshHost = "127.0.0.1"
+    $sshPort = 222222
+
+    Write-Host "  Waiting for SSH on ${sshHost}:${sshPort}..." -ForegroundColor White
     Write-Host "  (Ubuntu installation takes 5-15 minutes, please be patient)" -ForegroundColor DarkGray
 
-    $vmIp = $null
-    $maxWait = 120  # 120 x 15s = 30 minutes max
+    $sshReady = $false
+    $maxWait = 180  # 180 x 10s = 30 minutes max
     for ($i = 0; $i -lt $maxWait; $i++) {
         try {
-            $ipInfo = & $Vbox guestproperty get $VM_NAME "/VirtualBox/GuestInfo/Net/0/V4/IP" 2>$null
-            if ($ipInfo -match 'Value:\s+(\d+\.\d+\.\d+\.\d+)') {
-                $vmIp = $Matches[1]
-                break
-            }
-        } catch { }
-
-        # Show progress every minute
-        if ($i % 4 -eq 0) {
-            $min = [math]::Floor($i * 15 / 60)
-            Write-Host -NoNewline "`r    Waiting for IP... ${min}min elapsed   "
-        }
-        Start-Sleep -Seconds 15
-    }
-
-    Write-Host ""  # Clear progress line
-
-    if ($vmIp) {
-        Write-Check "VM IP: $vmIp"
-    } else {
-        Write-Check "Could not determine VM IP after 30 minutes" -Warn
-        Write-Host "    Check VM console: $LOG_DIR\vm-console.log" -ForegroundColor Yellow
-        return @{ VmExists = $true; VmIp = $null }
-    }
-
-    # Wait for SSH (port 22 - unattended install uses default port)
-    Write-Host "  Waiting for SSH..." -ForegroundColor White
-    $sshReady = $false
-    for ($i = 0; $i -lt 30; $i++) {
-        try {
-            $testConn = Test-NetConnection -ComputerName $vmIp -Port 22 -WarningAction SilentlyContinue
+            $testConn = Test-NetConnection -ComputerName $sshHost -Port $sshPort -WarningAction SilentlyContinue
             if ($testConn.TcpTestSucceeded) {
                 $sshReady = $true
                 break
             }
         } catch { }
+
+        # Show progress every minute
+        if ($i % 6 -eq 0) {
+            $min = [math]::Floor($i * 10 / 60)
+            Write-Host -NoNewline "`r    Waiting for SSH... ${min}min elapsed   "
+        }
         Start-Sleep -Seconds 10
     }
 
-    if ($sshReady) {
-        Write-Check "SSH ready on port 22"
-    } else {
-        Write-Check "SSH not ready yet" -Warn
-    }
+    Write-Host ""  # Clear progress line
 
-    return @{ VmExists = $true; VmIp = $vmIp }
+    if ($sshReady) {
+        Write-Check "SSH ready on ${sshHost}:${sshPort}"
+        # Return 127.0.0.1 as the "IP" - all SSH connections use localhost with port forwarding
+        return @{ VmExists = $true; VmIp = $sshHost }
+    } else {
+        Write-Check "SSH not ready after 30 minutes" -Warn
+        Write-Host "    Check if VM is running: VBoxManage showvminfo $VM_NAME" -ForegroundColor Yellow
+        Write-Host "    Try SSH manually: ssh -p 2222 structura@127.0.0.1" -ForegroundColor Yellow
+        return @{ VmExists = $true; VmIp = $null }
+    }
 }
 
 # ============================================================================
@@ -952,7 +941,7 @@ function Invoke-DockerSetup {
     }
 
     $sshTarget = "structura@$VmIp"
-    $sshPort = 22
+    $sshPort = 2222
 
     # Guard: check if Docker already installed
     Write-Host "  Checking Docker on VM..." -ForegroundColor White
@@ -1025,7 +1014,7 @@ function Invoke-RepoAndAppdata {
     }
 
     $sshTarget = "structura@$VmIp"
-    $sshPort = 22
+    $sshPort = 2222
 
     # Guard: check if repos already cloned
     $repoCheck = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget "test -d /opt/structura/repos/structura-core && echo EXISTS || echo MISSING" 2>$null
@@ -1126,7 +1115,7 @@ function Invoke-ContainerDeployment {
     param([string]$VmIp)
 
     $sshTarget = "structura@$VmIp"
-    $sshPort = 22
+    $sshPort = 2222
 
     # Prepare .env from client template
     Write-Host "  Preparing .env from client template..." -ForegroundColor White
@@ -1255,7 +1244,7 @@ function Invoke-HindsightAndConfig {
     param([string]$VmIp)
 
     $sshTarget = "structura@$VmIp"
-    $sshPort = 22
+    $sshPort = 2222
 
     # Init Hindsight banks
     Write-Host "  Initializing Hindsight banks..." -ForegroundColor White
@@ -1295,7 +1284,7 @@ function Invoke-PostSetup {
     param([string]$VmIp)
 
     $sshTarget = "structura@$VmIp"
-    $sshPort = 22
+    $sshPort = 2222
 
     # --- Duplicati backup schedule ---
     Write-Host "  Configuring Duplicati backup schedule..." -ForegroundColor White
@@ -1515,7 +1504,7 @@ function Invoke-LUKS {
     }
 
     $sshTarget = "structura@$VmIp"
-    $sshPort = 22
+    $sshPort = 2222
 
     $luksCmd = @"
         # LUKS encryption setup (simplified - in production use cryptsetup)
