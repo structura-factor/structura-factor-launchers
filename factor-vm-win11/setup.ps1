@@ -885,13 +885,10 @@ function Invoke-VMCreation {
         if ($DeployKeyPath -and (Test-Path $DeployKeyPath)) {
             $pubKey = (ssh-keygen -y -f $DeployKeyPath 2>$null)
         }
-        $postInstallCmd = if ($pubKey) {
-            "mkdir -p /home/structura/.ssh && echo '$pubKey' >> /home/structura/.ssh/authorized_keys && chmod 600 /home/structura/.ssh/authorized_keys && chown -R structura:structura /home/structura/.ssh"
-        } else {
-            ""
-        }
-        if ($postInstallCmd) {
-            & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local --post-install-command="$postInstallCmd" 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        if ($pubKey) {
+            # Install SSH key via post-install-command (runs as root after Ubuntu install)
+            $postCmd = "mkdir -p /home/structura/.ssh; echo ''$pubKey'' >> /home/structura/.ssh/authorized_keys; chmod 600 /home/structura/.ssh/authorized_keys; chown -R structura:structura /home/structura/.ssh"
+            & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local --post-install-command="$postCmd" 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
         } else {
             & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
         }
