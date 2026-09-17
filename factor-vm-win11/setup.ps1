@@ -843,24 +843,7 @@ function Invoke-VMCreation {
             Start-Sleep -Seconds 3
             Start-Process mstsc -ArgumentList "/v:localhost:5000"
 
-            # Open status monitor in separate window
-            # Write monitor script to temp file and execute (avoids here-string escaping issues)
-            $monitorFile = "$LOG_DIR\vm-monitor.ps1"
-            @'
-$ErrorActionPreference = 'Continue'
-$vbox = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
-Write-Host "=== STRUCTURA VM Monitor ===" -ForegroundColor Cyan
-Write-Host "Remote Desktop: localhost:5000 (mstsc /v:localhost:5000)" -ForegroundColor White
-Write-Host ""
-while ($true) {
-    $state = (& $vbox showvminfo structura-sawaryn --machinereadable 2>$null | Select-String "VMState=")
-    $stateStr = if ($state) { ($state -replace 'VMState=|"','') } else { "unknown" }
-    $ipRaw = (& $vbox guestproperty get structura-sawaryn "/VirtualBox/GuestInfo/Net/0/V4/IP" 2>$null)
-    $ipStr = if ($ipRaw -match "Value:\s+(\d+\.\d+\.\d+\.\d+)") { $Matches[1] } else { "no IP yet" }
-    $ts = Get-Date -Format "HH:mm:ss"
-    Write-Host "[$ts] State: $stateStr  IP: $ipStr" -ForegroundColor Green
-    Start-Sleep -Seconds 10
-}
+# VM runs headless - SSH via NAT port forwarding (localhost:2222)
 '@ | Out-File -FilePath $monitorFile -Encoding ASCII -Force
             Start-Process powershell -ArgumentList "-NoExit","-File",$monitorFile -WindowStyle Normal
         }
@@ -875,7 +858,7 @@ function Get-VmIpAndSsh {
     # With NAT port forwarding, we connect to localhost:2222 (not guest IP)
     # This works without Guest Additions / guestproperty
     $sshHost = "127.0.0.1"
-    $sshPort = 222222
+    $sshPort = 2222
 
     Write-Host "  Waiting for SSH on ${sshHost}:${sshPort}..." -ForegroundColor White
     Write-Host "  (Ubuntu installation takes 5-15 minutes, please be patient)" -ForegroundColor DarkGray
