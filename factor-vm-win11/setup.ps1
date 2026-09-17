@@ -776,9 +776,12 @@ function Invoke-VMCreation {
         if (-not (Test-Path $diskDir)) {
             New-Item -ItemType Directory -Path $diskDir -Force | Out-Null
         }
-        if (-not (Test-Path $diskPath)) {
-            & $vbox createmedium disk --filename $diskPath --size $VM_DISK --format VDI 2>&1 | Out-Null
+        # Remove old VDI from media registry if it exists (avoids UUID mismatch)
+        if (Test-Path $diskPath) {
+            & $vbox closemedium disk $diskPath 2>&1 | Out-Null
+            Remove-Item $diskPath -Force -ErrorAction SilentlyContinue
         }
+        & $vbox createmedium disk --filename $diskPath --size $VM_DISK --format VDI 2>&1 | Out-Null
         & $vbox storagectl $VM_NAME --name "SATA" --add sata --controller IntelAhci 2>&1 | Out-Null
         & $vbox storageattach $VM_NAME --storagectl "SATA" --port 0 --device 0 --type hdd --medium $diskPath 2>&1 | Out-Null
 
@@ -794,19 +797,20 @@ function Invoke-VMCreation {
         Write-Host "  Starting unattended Ubuntu Server 24.04 LTS installation..." -ForegroundColor White
         Write-Host "  (This takes 5-15 minutes. VBoxManage handles the installer automatically.)" -ForegroundColor DarkGray
 
+        $isoFilePath = $Media['IsoPath']
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
-        & $vbox unattended install $VM_NAME --iso=$Media.IsoPath --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura --start-vm=headless 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local --start-vm=headless 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
         $unattendedExit = $LASTEXITCODE
         $ErrorActionPreference = $prevEAP
         Write-Log "Unattended install exit code: $unattendedExit"
         
         if ($unattendedExit -ne 0) {
             Write-Host "    VBoxManage unattended install failed (exit $unattendedExit)" -ForegroundColor Yellow
-            Write-Host "    Trying without --start-vm..." -ForegroundColor Yellow
+            Write-Host "    Trying minimal args..." -ForegroundColor Yellow
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
-            & $vbox unattended install $VM_NAME --iso=$Media.IsoPath --user=structura --password=structura --time-zone=Europe/Warsaw 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --time-zone=Europe/Warsaw --hostname=structura.local 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
             $unattendedExit = $LASTEXITCODE
             $ErrorActionPreference = $prevEAP
             Write-Log "Unattended install (minimal) exit code: $unattendedExit"
