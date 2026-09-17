@@ -8,15 +8,15 @@
 #
 # Format: <filename>    SHA256: <checksum>    SIZE: <approx>    URL: <download_url>
 
-# Ubuntu 24.04.1 Server ISO (~2.5GB)
-# URL: https://releases.ubuntu.com/24.04/ubuntu-24.04.1-server-amd64.iso
+# Ubuntu 24.04.5 LTS Server ISO (~3.1GB)
+# URL: https://releases.ubuntu.com/24.04/ubuntu-24.04.5-live-server-amd64.iso
 # Aktualna SHA256: https://releases.ubuntu.com/24.04/SHA256SUMS
-ubuntu-24.04.1-server-amd64.iso    SHA256: a4acf510e7af7af6fae5fe5f4bcfa227e3d5d8a1f9e5c0e5c5c5c5c5c5c5c5c5    SIZE: ~2.5GB    URL: https://releases.ubuntu.com/24.04/ubuntu-24.04.1-server-amd64.iso
+ubuntu-24.04.5-live-server-amd64.iso    SHA256: 97f3d7ffb032c3eb3b23d2c8be9cc76e60c2c1f2c0146ba5ba9fe01cafae0fd8    SIZE: ~3.1GB    URL: https://releases.ubuntu.com/24.04/ubuntu-24.04.5-live-server-amd64.iso
 
-# VirtualBox 7.1.4 for Windows (~100MB)
-# URL: https://download.virtualbox.org/virtualbox/7.1.4/VirtualBox-7.1.4-Win.exe
+# VirtualBox 7.1.16 for Windows (~119MB)
+# URL: https://download.virtualbox.org/virtualbox/7.1.16/VirtualBox-7.1.16-172425-Win.exe
 # Aktualna SHA256: sprawdz na https://www.virtualbox.org/wiki/Downloads
-VirtualBox-7.1.4-Win.exe           SHA256: 8b3e0c1a2f4d5e6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a    SIZE: ~100MB   URL: https://download.virtualbox.org/virtualbox/7.1.4/VirtualBox-7.1.4-Win.exe
+VirtualBox-7.1.16-172425-Win.exe           SHA256: 42c9f13f157361129cfdc13d21a2560815d8e544657e215c9040e00dbb98a13a    SIZE: ~119MB   URL: https://download.virtualbox.org/virtualbox/7.1.16/VirtualBox-7.1.16-172425-Win.exe
 
 # --- Instrukcja aktualizacji ---
 # 1. Pobierz nowy plik z internetu
