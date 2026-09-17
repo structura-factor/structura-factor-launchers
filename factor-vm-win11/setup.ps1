@@ -651,6 +651,26 @@ function Invoke-MediaSourcing {
             # Clean up extracted files
             if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
 
+            # Install VirtualBox Extension Pack (for VRDE/Remote Desktop preview)
+            $extpackUrl = "https://download.virtualbox.org/virtualbox/7.1.16/Oracle_VirtualBox_Extension_Pack-7.1.16-172425.vbox-extpack"
+            $extpackPath = "$mediaDir\Oracle_VirtualBox_Extension_Pack-7.1.16.vbox-extpack"
+            if (-not (Test-Path $extpackPath)) {
+                Write-Host "  Downloading Extension Pack (~22MB)..." -ForegroundColor White
+                Invoke-WebRequest -Uri $extpackUrl -OutFile $extpackPath -UseBasicParsing -TimeoutSec 120
+            }
+            # Check if already installed
+            $extpackInstalled = (& $vbox list extpacks 2>$null | Select-String "Oracle VM VirtualBox Extension Pack")
+            if (-not $extpackInstalled) {
+                Write-Host "  Installing Extension Pack..." -ForegroundColor White
+                $prevEAP = $ErrorActionPreference
+                $ErrorActionPreference = 'Continue'
+                & $vbox extpack install --replace $extpackPath 2>&1 | Out-Null
+                $ErrorActionPreference = $prevEAP
+                Write-Check "Extension Pack installed (VRDE ready)"
+            } else {
+                Write-Check "Extension Pack already installed"
+            }
+
             # Refresh environment variables
             $env:VBOX_INSTALL_PATH = [System.Environment]::GetEnvironmentVariable("VBOX_INSTALL_PATH", "Machine")
             $env:VBOX_MSI_INSTALL_PATH = [System.Environment]::GetEnvironmentVariable("VBOX_MSI_INSTALL_PATH", "Machine")
@@ -773,6 +793,8 @@ function Invoke-VMCreation {
         & $vbox modifyvm $VM_NAME --natpf1 "ssh,tcp,,2222,,22" 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --natpf1 "http,tcp,,8080,,80" 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --natpf1 "https,tcp,,8443,,443" 2>&1 | Out-Null
+        # VRDE for Remote Desktop preview (view-only, non-blocking)
+        & $vbox modifyvm $VM_NAME --vrde on --vrdeport 5000 --vrde-auth-type null 2>&1 | Out-Null
 
         # Create disk
         $diskPath = "$LOG_DIR\vm-disks\$VM_NAME.vdi"
