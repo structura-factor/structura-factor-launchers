@@ -832,10 +832,30 @@ function Invoke-VMCreation {
             & $vbox startvm $VM_NAME --type headless 2>$null
         }
 
-        # Open VM console in separate window for visibility
+        # Enable VRDE so user can connect with Remote Desktop to see VM screen
         if (-not $Quiet) {
-            $consoleScript = "Write-Host '=== STRUCTURA VM Console (structura-sawaryn) ===' -ForegroundColor Cyan; Write-Host ''; Get-Content '$LOG_DIR\vm-console.log' -Wait -Tail 30"
-            Start-Process powershell -ArgumentList "-NoExit","-Command",$consoleScript -WindowStyle Normal
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            & $vbox modifyvm $VM_NAME --vrde on --vrdeport 5000 --vrde-auth-type null 2>&1 | Out-Null
+            $ErrorActionPreference = $prevEAP
+            
+            # Open status monitor in separate window
+            $monitorScript = @"
+Write-Host '=== STRUCTURA VM Monitor ===' -ForegroundColor Cyan
+Write-Host 'VM: $VM_NAME' -ForegroundColor White
+Write-Host 'VRDE: localhost:5000 (mstsc /v:localhost:5000)' -ForegroundColor DarkGray
+Write-Host ''
+Write-Host 'To see VM screen: open Remote Desktop (mstsc /v:localhost:5000)' -ForegroundColor Yellow
+Write-Host ''
+while (`$true) {
+    `$state = (& "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" showvminfo $VM_NAME --machinereadable 2>`$null | Select-String 'VMState=')
+    `$ip = (& "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" guestproperty get $VM_NAME "/VirtualBox/GuestInfo/Net/0/V4/IP" 2>`$null)
+    `$ts = Get-Date -Format 'HH:mm:ss'
+    Write-Host "`r[`$ts] State: `$(`$state -replace 'VMState=|"','')  IP: `$(`$ip -replace 'Value: ','no IP yet')" -NoNewline -ForegroundColor Green
+    Start-Sleep -Seconds 5
+}
+"@
+            Start-Process powershell -ArgumentList "-NoExit","-Command",$monitorScript -WindowStyle Normal
         }
     }
 
