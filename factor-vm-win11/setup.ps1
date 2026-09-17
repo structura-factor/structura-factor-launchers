@@ -311,6 +311,89 @@ function Show-HealthTable {
     return $Services
 }
 
+
+# ============================================================================
+# SSH with password helper (Windows doesn't have sshpass)
+# ============================================================================
+
+function Invoke-SshWithPassword {
+    param(
+        [string]$Command,
+        [string]$Host = "127.0.0.1",
+        [int]$Port = 2222,
+        [string]$User = "structura",
+        [string]$Password = "structura",
+        [int]$TimeoutSec = 60
+    )
+
+    # Use SSH_ASKPASS trick: create a temp script that echoes the password
+    $askPassScript = "$env:TEMP\ssh-askpass.ps1"
+    "@echo `$env:SSH_PASSWORD" | Out-File -FilePath $askPassScript -Encoding ASCII -Force
+    $askPassBat = "$env:TEMP\ssh-askpass.bat"
+    "@`$env:TEMP\ssh-askpass.ps1" | Out-File -FilePath $askPassBat -Encoding ASCII -Force
+    
+    $env:SSH_ASKPASS = $askPassBat
+    $env:SSH_PASSWORD = $Password
+    $env:DISPLAY = "dummy"
+
+    try {
+        $sshArgs = @(
+            "-p", $Port,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=NUL",
+            "-o", "ConnectTimeout=30",
+            "-o", "PreferredAuthentications=password",
+            "-o", "PubkeyAuthentication=no",
+            "$User@$Host",
+            $Command
+        )
+        
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "ssh"
+        $psi.Arguments = ($sshArgs -join ' ')
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.RedirectStandardInput = $true
+        $psi.CreateNoWindow = $true
+        $psi.EnvironmentVariables["SSH_ASKPASS"] = $askPassBat
+        $psi.EnvironmentVariables["SSH_PASSWORD"] = $Password
+        $psi.EnvironmentVariables["DISPLAY"] = "dummy"
+        
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $output = $proc.StandardOutput.ReadToEnd()
+        $error = $proc.StandardError.ReadToEnd()
+        $proc.WaitForExit($TimeoutSec * 1000)
+        
+        if (-not $proc.HasExited) {
+            $proc.Kill()
+        }
+        
+        return $output
+    }
+    finally {
+        Remove-Item $askPassScript -Force -ErrorAction SilentlyContinue
+        Remove-Item $askPassBat -Force -ErrorAction SilentlyContinue
+        Remove-Item env:\SSH_ASKPASS -ErrorAction SilentlyContinue
+        Remove-Item env:\SSH_PASSWORD -ErrorAction SilentlyContinue
+        Remove-Item env:\DISPLAY -ErrorAction SilentlyContinue
+    }
+}
+
+function Install-SshKeyOnVm {
+    param(
+        [string]$PublicKey,
+        [string]$Host = "127.0.0.1",
+        [int]$Port = 2222,
+        [string]$User = "structura",
+        [string]$Password = "structura"
+    )
+    
+    $cmd = "mkdir -p ~/.ssh && echo '$PublicKey' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+    $result = Invoke-SshWithPassword -Command $cmd -Host $Host -Port $Port -User $User -Password $Password
+    return $result
+}
+
 # ============================================================================
 # Utility functions
 # ============================================================================
@@ -914,25 +997,46 @@ function Get-VmIpAndSsh {
 
     if ($sshReady) {
         Write-Check "SSH port open on ${sshHost}:${sshPort}"
-        # Wait for SSH to be fully ready (handshake can fail right after boot)
-        Write-Host "  Waiting for SSH to be fully ready..." -ForegroundColor White
+        # Wait for SSH to be fully ready, then install SSH key for key-based auth
+        Write-Host "  Setting up SSH key authentication..." -ForegroundColor White
+        
+        # Get the public key from the deploy key
+        $pubKey = $null
+        if ($DeployKeyPath -and (Test-Path $DeployKeyPath)) {
+            $pubKey = (ssh-keygen -y -f $DeployKeyPath 2>$null)
+        }
+        
         $sshStable = $false
         for ($i = 0; $i -lt 12; $i++) {
             try {
-                $sshTest = ssh -p $sshPort -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes $sshHost "echo SSH_OK" 2>$null
+                if ($pubKey) {
+                    # Try key-based auth first
+                    $sshTest = ssh -p $sshPort -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes -i $DeployKeyPath $sshHost "echo SSH_OK" 2>$null
+                    if ($sshTest -match 'SSH_OK') {
+                        $sshStable = $true
+                        Write-Check "SSH key auth working"
+                        break
+                    }
+                }
+                
+                # Try password-based auth using helper
+                $sshTest = Invoke-SshWithPassword -Command "echo SSH_OK" -Host $sshHost -Port $sshPort
                 if ($sshTest -match 'SSH_OK') {
+                    # Password works - install the key for future use
+                    if ($pubKey) {
+                        Install-SshKeyOnVm -PublicKey $pubKey -Host $sshHost -Port $sshPort | Out-Null
+                        Write-Check "SSH key installed on VM"
+                    }
                     $sshStable = $true
+                    Write-Check "SSH ready (password auth) on ${sshHost}:${sshPort}"
                     break
                 }
             } catch { }
             Start-Sleep -Seconds 10
         }
-        if ($sshStable) {
-            Write-Check "SSH ready on ${sshHost}:${sshPort}"
-        } else {
-            # SSH port is open but handshake fails - might need password auth
-            # Try with password
-            Write-Check "SSH port open, trying with password..." -Warn
+        
+        if (-not $sshStable) {
+            Write-Check "SSH not fully ready" -Warn
         }
         return @{ VmExists = $true; VmIp = $sshHost }
     } else {
@@ -1498,6 +1602,21 @@ Host github.com
         Write-Check "SSH config: github.com configured"
     } else {
         Write-Check "SSH config: github.com already configured"
+    }
+
+    # Add 127.0.0.1 (VM via NAT) to SSH config for key-based auth
+    $vmConfigEntry = @"
+Host 127.0.0.1
+    HostName 127.0.0.1
+    User structura
+    Port 2222
+    IdentityFile $keyDest
+    StrictHostKeyChecking no
+    UserKnownHostsFile NUL
+"@
+    if ($existingConfig -notmatch 'Host 127.0.0.1') {
+        Add-Content -Path $configPath -Value $vmConfigEntry
+        Write-Check "SSH config: 127.0.0.1:2222 configured"
     }
 }
 
