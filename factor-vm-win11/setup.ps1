@@ -965,126 +965,89 @@ function Invoke-VMCreation {
 function Get-VmIpAndSsh {
     param([string]$Vbox)
 
-    # With NAT port forwarding, we connect to localhost:2222 (not guest IP)
-    # This works without Guest Additions / guestproperty
     $sshHost = "127.0.0.1"
     $sshPort = 2222
 
-    Write-Host "  Waiting for Ubuntu to install and SSH to come up..." -ForegroundColor White
+    # Wait for Ubuntu to finish installing (fixed 10 min, with progress display)
+    Write-Host "  Waiting for Ubuntu to install (10 min)..." -ForegroundColor White
     Write-Host "  (Ubuntu installation takes 5-15 minutes, please be patient)" -ForegroundColor DarkGray
     Write-Host ""
 
-    $sshReady = $false
-    $maxWait = 180  # 180 x 10s = 30 minutes max
-    for ($i = 0; $i -lt $maxWait; $i++) {
-        try {
-            $testConn = Test-NetConnection -ComputerName $sshHost -Port $sshPort -WarningAction SilentlyContinue
-            if ($testConn.TcpTestSucceeded) {
-                # Port is open - but SSH might not be ready (Connection reset)
-                # Wait a bit and try actual SSH
-                Start-Sleep -Seconds 5
-                $sshReady = $true
-                break
-            }
-        } catch { }
-
-        # Show progress every 30 seconds with VM state
-        if ($i % 3 -eq 0) {
-            $min = [math]::Floor($i * 10 / 60)
-            $sec = ($i * 10) % 60
-            $vmState = (& $Vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState=')
-            $stateStr = if ($vmState) { $vmState -replace 'VMState=|"','' } else { 'unknown' }
-            Write-Host "  [${min}min ${sec}s] VM: $stateStr | Czekam na SSH..." -ForegroundColor DarkGray
-        }
-        Start-Sleep -Seconds 10
+    $waitMin = 10
+    for ($i = 0; $i -lt $waitMin; $i++) {
+        $vmState = (& $Vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState=')
+        $stateStr = if ($vmState) { $vmState -replace 'VMState=|"','' } else { 'unknown' }
+        Write-Host "  [$($i+1)min] VM: $stateStr - czekam na koniec instalacji..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds 60
     }
 
     Write-Host ""
+    Write-Host "  Installing SSH key via VM console..." -ForegroundColor White
 
-    if ($sshReady) {
-        Write-Check "SSH port open on ${sshHost}:${sshPort}"
-        # Wait for SSH to be fully ready, then install SSH key for key-based auth
-        Write-Host "  Setting up SSH key authentication..." -ForegroundColor White
-        
-        # Get the public key from the deploy key
-        # Install SSH key via VBoxManage keyboard input (most reliable method)
-        # Wait for VM to reach login prompt, then type login + password + install key
-        Write-Host "  Installing SSH key via VM console..." -ForegroundColor White
-        
-        $pubKey = ""
-        if ($DeployKeyPath -and (Test-Path $DeployKeyPath)) {
-            $pubKey = (ssh-keygen -y -f $DeployKeyPath 2>$null)
-        }
-        
-        # Wait for VM to be at login prompt (give it time to finish booting)
-        Start-Sleep -Seconds 30
-        
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        
-        # Type login credentials via VBoxManage keyboard
-        & $Vbox controlvm $VM_NAME keyboardputstring "structura" 2>&1 | Out-Null
-        Start-Sleep -Seconds 1
-        & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
-        Start-Sleep -Seconds 2
-        & $Vbox controlvm $VM_NAME keyboardputstring "structura" 2>&1 | Out-Null
-        Start-Sleep -Seconds 1
-        & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
-        Start-Sleep -Seconds 3
-        
-        # Install SSH key by typing commands
-        if ($pubKey) {
-            $keyCmd = "mkdir -p ~/.ssh && echo ''$pubKey'' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && echo KEY_INSTALLED"
-            & $Vbox controlvm $VM_NAME keyboardputstring $keyCmd 2>&1 | Out-Null
-            Start-Sleep -Seconds 1
-            & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
-            Start-Sleep -Seconds 5
-        }
-        
-        # Enable SSH service
-        & $Vbox controlvm $VM_NAME keyboardputstring "sudo systemctl enable ssh && sudo systemctl restart ssh" 2>&1 | Out-Null
+    # Get public key
+    $pubKey = ""
+    if ($DeployKeyPath -and (Test-Path $DeployKeyPath)) {
+        $pubKey = (ssh-keygen -y -f $DeployKeyPath 2>$null)
+    }
+
+    # Use VBoxManage keyboard input to login and install SSH key
+    # Wrap in EAP=Continue to avoid RemoteException from VBoxManage stderr
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+
+    # Send login: structura
+    & $Vbox controlvm $VM_NAME keyboardputstring "structura" 2>&1 | Out-Null
+    Start-Sleep -Seconds 2
+    & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
+    Start-Sleep -Seconds 3
+
+    # Send password: structura
+    & $Vbox controlvm $VM_NAME keyboardputstring "structura" 2>&1 | Out-Null
+    Start-Sleep -Seconds 2
+    & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
+    Start-Sleep -Seconds 5
+
+    # Install SSH key
+    if ($pubKey) {
+        $keyCmd = "mkdir -p ~/.ssh && echo ''$pubKey'' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && echo KEY_DONE"
+        & $Vbox controlvm $VM_NAME keyboardputstring $keyCmd 2>&1 | Out-Null
         Start-Sleep -Seconds 1
         & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
         Start-Sleep -Seconds 5
-        
-        $ErrorActionPreference = $prevEAP
-        
-        Write-Host "  SSH key installed via console. Waiting for SSH..." -ForegroundColor White
-        
-        # Now try SSH key auth
-        $sshStable = $false
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        for ($i = 0; $i -lt 30; $i++) {
-            try {
-                $sshTest = ssh -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=10 -o BatchMode=yes -i "$env:USERPROFILE\.ssh\id_ed25519" $sshHost "echo SSH_OK" 2>&1
-                if ($sshTest -match 'SSH_OK') {
-                    $sshStable = $true
-                    break
-                }
-            } catch { }
-            if ($i % 3 -eq 0) {
-                $min = [math]::Floor($i * 10 / 60)
-                Write-Host "  [${min}min] Waiting for SSH..." -ForegroundColor DarkGray
-            }
-            Start-Sleep -Seconds 10
-        }
-        $ErrorActionPreference = $prevEAP
-        
-        if ($sshStable) {
-            Write-Check "SSH ready (key auth) on ${sshHost}:${sshPort}"
-        } else {
-            Write-Check "SSH key auth failed" -Warn
-            Write-Host "  VM console login may have failed. Check screenshot:" -ForegroundColor Yellow
-            Write-Host "    VBoxManage controlvm $VM_NAME screenshotpng C:\structura\vm-screen.png" -ForegroundColor White
-        }
-        return @{ VmExists = $true; VmIp = $sshHost }
-    } else {
-        Write-Check "SSH not ready after 30 minutes" -Warn
-        Write-Host "    Check if VM is running: VBoxManage showvminfo $VM_NAME" -ForegroundColor Yellow
-        Write-Host "    Try SSH manually: ssh -p 2222 structura@127.0.0.1" -ForegroundColor Yellow
-        return @{ VmExists = $true; VmIp = $null }
     }
+
+    # Enable SSH
+    & $Vbox controlvm $VM_NAME keyboardputstring "sudo systemctl enable ssh && sudo systemctl restart ssh && echo SSH_ENABLED" 2>&1 | Out-Null
+    Start-Sleep -Seconds 1
+    & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
+    Start-Sleep -Seconds 5
+
+    $ErrorActionPreference = $prevEAP
+
+    # Now try SSH key auth
+    Write-Host "  Testing SSH connection..." -ForegroundColor White
+    $sshStable = $false
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    for ($i = 0; $i -lt 12; $i++) {
+        try {
+            $sshTest = ssh -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=10 -o BatchMode=yes -i "$env:USERPROFILE\.ssh\id_ed25519" $sshHost "echo SSH_OK" 2>&1
+            if ($sshTest -match 'SSH_OK') {
+                $sshStable = $true
+                break
+            }
+        } catch { }
+        Start-Sleep -Seconds 10
+    }
+    $ErrorActionPreference = $prevEAP
+
+    if ($sshStable) {
+        Write-Check "SSH ready (key auth) on ${sshHost}:${sshPort}"
+    } else {
+        Write-Check "SSH key auth failed" -Warn
+        Write-Host "  Sprawdz VM: VBoxManage controlvm $VM_NAME screenshotpng C:\structura\vm-screen.png" -ForegroundColor Yellow
+    }
+    return @{ VmExists = $true; VmIp = $sshHost }
 }
 
 # ============================================================================
