@@ -6,6 +6,8 @@
 
 [CmdletBinding()]
 param(
+    [string]$InstallPath = "C:\STRUCTURA",
+
     [string]$MediaCachePath,
     [int]$VM_RAM = 4096,
     [int]$VM_CPU = 2,
@@ -21,7 +23,7 @@ $ErrorActionPreference = 'Stop'
 $CLIENT = "sawaryn"
 $LAUNCHER_REPO = "structura-factor/structura-factor-launchers"
 $BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@ba08692f0f31/bootstrap.ps1"
-$BASE_DIR = "C:\STRUCTURA"
+$BASE_DIR = $InstallPath
 $KEYS_DIR = "$BASE_DIR\klucze"
 $MEDIA_DIR = "$BASE_DIR\media"
 $LOGS_DIR = "$BASE_DIR\logs"
@@ -42,7 +44,7 @@ Write-Host "|       STRUCTURA FACTOR - Instalator v1.2                   |" -For
 Write-Host "|       Personal Assistant prawniczy                          |" -ForegroundColor Cyan
 Write-Host "|                                                             |" -ForegroundColor Cyan
 Write-Host "|  Klient: Sawaryn i Partnerzy                                |" -ForegroundColor White
-Write-Host "|  Folder: C:\STRUCTURA                                        |" -ForegroundColor White
+Write-Host "|  Folder: $InstallPath                                        |" -ForegroundColor White
 Write-Host "+============================================================+" -ForegroundColor Cyan
 Write-Host ""
 
