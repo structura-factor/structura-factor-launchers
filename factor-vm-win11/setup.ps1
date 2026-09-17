@@ -590,7 +590,7 @@ function Invoke-MediaSourcing {
         }
     }
 
-    if (-not $vboxExists -and -not $Preflight.VBoxOK) {
+    if (-not $Preflight.VBoxOK) {
         # Need to install VirtualBox
         $vboxUrl = "https://download.virtualbox.org/virtualbox/7.1.16/$VBOX_INSTALLER_NAME"
         Write-Host "  Downloading VirtualBox installer (~119MB)..." -ForegroundColor White
