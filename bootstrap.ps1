@@ -318,13 +318,25 @@ if ($PSBoundParameters.ContainsKey("Verbose")) { $setupArgs += "-Verbose" }
 Write-StructuraLog "Executing launcher: $launcherName/setup.ps1"
 Write-StructuraLog "Arguments: $($setupArgs -join ' ')"
 
-Push-Location $launcherDir
-try {
-    & ".\setup.ps1" @setupArgs
-    $exitCode = $LASTEXITCODE
+# Build command string - more reliable than splatting when loaded via Invoke-Expression
+$setupCmd = "& '$launcherDir\setup.ps1'"
+foreach ($arg in $setupArgs) {
+    if ($arg -match '^-') {
+        $setupCmd += " $arg"
+    } else {
+        $setupCmd += " '$arg'"
+    }
 }
-finally {
-    Pop-Location
+Write-StructuraLog "Setup command: $setupCmd"
+
+try {
+    Invoke-Expression $setupCmd
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq $null) { $exitCode = 0 }
+}
+catch {
+    Write-StructuraLog "setup.ps1 error: $_" -Level "ERROR"
+    $exitCode = 1
 }
 
 if ($exitCode -ne 0) {
