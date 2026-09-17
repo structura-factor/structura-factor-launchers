@@ -595,29 +595,40 @@ function Invoke-MediaSourcing {
             }
             Write-Check "VirtualBox: downloaded"
 
-            # Install silently
+            # Install silently - VBox 7.1+ wrapper exe uses --msiparams to pass MSI flags
             Write-Host "  Installing VirtualBox..." -ForegroundColor White
-            $installProc = Start-Process -FilePath $vboxPath -ArgumentList "--silent --noreboot" -Wait -PassThru
+            $vboxInstallArgs = "--msiparams", "/quiet", "/norestart", "REBOOT=Suppress", "ALLUSERS=1"
+            $installProc = Start-Process -FilePath $vboxPath -ArgumentList $vboxInstallArgs -Wait -PassThru
+            Write-Log "VBox install exit code: $($installProc.ExitCode)"
             if ($installProc.ExitCode -eq 0) {
                 Write-Check "VirtualBox: installed"
                 $mediaResults.InstalledVBox = $true
             } else {
-                Write-Check "VirtualBox install exit code: $($installProc.ExitCode)" -Warn
-                Write-Host "    Trying alternate install arguments..." -ForegroundColor Yellow
-                $installProc = Start-Process -FilePath $vboxPath -ArgumentList "-silent -noreboot" -Wait -PassThru
-                if ($installProc.ExitCode -eq 0) {
-                    Write-Check "VirtualBox: installed (alternate args)"
-                    $mediaResults.InstalledVBox = $true
+                Write-Check "VirtualBox install exit code: $($installProc.ExitCode) - trying extract+msiexec method" -Warn
+                # Fallback: extract MSI then install via msiexec
+                $extractDir = "$env:TEMP\vbox-extract"
+                if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+                & $vboxPath -extract -path $extractDir -silent 2>$null
+                Start-Sleep -Seconds 3
+                $msiFile = Get-ChildItem -Path $extractDir -Filter "*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($msiFile) {
+                    Write-Host "    Installing via msiexec..." -ForegroundColor Yellow
+                    $msiProc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$($msiFile.FullName)`" /quiet /norestart REBOOT=Suppress ALLUSERS=1" -Wait -PassThru
+                    Write-Log "msiexec exit code: $($msiProc.ExitCode)"
+                    if ($msiProc.ExitCode -eq 0) {
+                        Write-Check "VirtualBox: installed via msiexec"
+                        $mediaResults.InstalledVBox = $true
+                    } else {
+                        Write-Check "VirtualBox msiexec failed (exit $($msiProc.ExitCode))" -Fail
+                    }
                 } else {
-                    Write-Check "VirtualBox install failed (exit $($installProc.ExitCode))" -Fail
+                    Write-Check "VirtualBox: MSI not found after extract" -Fail
                 }
             }
 
             # Refresh environment variables - installer sets VBOX_INSTALL_PATH system-wide
-            # but current process doesn't see it until we reload
             $env:VBOX_INSTALL_PATH = [System.Environment]::GetEnvironmentVariable("VBOX_INSTALL_PATH", "Machine")
             $env:VBOX_MSI_INSTALL_PATH = [System.Environment]::GetEnvironmentVariable("VBOX_MSI_INSTALL_PATH", "Machine")
-            # Also update PATH to include VBox directory
             $machinePath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
             if ($machinePath) { $env:PATH = "$machinePath;$env:PATH" }
             Write-Log "VBox env refreshed: VBOX_INSTALL_PATH=$env:VBOX_INSTALL_PATH"
