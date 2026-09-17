@@ -1007,11 +1007,55 @@ function Get-VmIpAndSsh {
         Write-Host "  Setting up SSH key authentication..." -ForegroundColor White
         
         # Get the public key from the deploy key
-        # Wait for SSH key auth (key installed via --post-install-command during unattended install)
+        # Install SSH key via VBoxManage keyboard input (most reliable method)
+        # Wait for VM to reach login prompt, then type login + password + install key
+        Write-Host "  Installing SSH key via VM console..." -ForegroundColor White
+        
+        $pubKey = ""
+        if ($DeployKeyPath -and (Test-Path $DeployKeyPath)) {
+            $pubKey = (ssh-keygen -y -f $DeployKeyPath 2>$null)
+        }
+        
+        # Wait for VM to be at login prompt (give it time to finish booting)
+        Start-Sleep -Seconds 30
+        
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        
+        # Type login credentials via VBoxManage keyboard
+        & $Vbox controlvm $VM_NAME keyboardputstring "structura" 2>&1 | Out-Null
+        Start-Sleep -Seconds 1
+        & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
+        Start-Sleep -Seconds 2
+        & $Vbox controlvm $VM_NAME keyboardputstring "structura" 2>&1 | Out-Null
+        Start-Sleep -Seconds 1
+        & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
+        Start-Sleep -Seconds 3
+        
+        # Install SSH key by typing commands
+        if ($pubKey) {
+            $keyCmd = "mkdir -p ~/.ssh && echo ''$pubKey'' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && echo KEY_INSTALLED"
+            & $Vbox controlvm $VM_NAME keyboardputstring $keyCmd 2>&1 | Out-Null
+            Start-Sleep -Seconds 1
+            & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
+            Start-Sleep -Seconds 5
+        }
+        
+        # Enable SSH service
+        & $Vbox controlvm $VM_NAME keyboardputstring "sudo systemctl enable ssh && sudo systemctl restart ssh" 2>&1 | Out-Null
+        Start-Sleep -Seconds 1
+        & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
+        Start-Sleep -Seconds 5
+        
+        $ErrorActionPreference = $prevEAP
+        
+        Write-Host "  SSH key installed via console. Waiting for SSH..." -ForegroundColor White
+        
+        # Now try SSH key auth
         $sshStable = $false
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
-        for ($i = 0; $i -lt 60; $i++) {
+        for ($i = 0; $i -lt 30; $i++) {
             try {
                 $sshTest = ssh -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=10 -o BatchMode=yes -i "$env:USERPROFILE\.ssh\id_ed25519" $sshHost "echo SSH_OK" 2>&1
                 if ($sshTest -match 'SSH_OK') {
@@ -1021,7 +1065,7 @@ function Get-VmIpAndSsh {
             } catch { }
             if ($i % 3 -eq 0) {
                 $min = [math]::Floor($i * 10 / 60)
-                Write-Host "  [${min}min] Waiting for SSH key auth..." -ForegroundColor DarkGray
+                Write-Host "  [${min}min] Waiting for SSH..." -ForegroundColor DarkGray
             }
             Start-Sleep -Seconds 10
         }
@@ -1030,11 +1074,9 @@ function Get-VmIpAndSsh {
         if ($sshStable) {
             Write-Check "SSH ready (key auth) on ${sshHost}:${sshPort}"
         } else {
-            Write-Check "SSH key auth failed after 5 minutes" -Warn
-            Write-Host "  Manual SSH install needed. Run:" -ForegroundColor Yellow
-            Write-Host "    ssh -p 2222 structura@127.0.0.1" -ForegroundColor White
-            Write-Host "  Password: structura" -ForegroundColor White
-            Write-Host "  Then run: mkdir -p ~/.ssh && echo '<pubkey>' >> ~/.ssh/authorized_keys" -ForegroundColor White
+            Write-Check "SSH key auth failed" -Warn
+            Write-Host "  VM console login may have failed. Check screenshot:" -ForegroundColor Yellow
+            Write-Host "    VBoxManage controlvm $VM_NAME screenshotpng C:\structura\vm-screen.png" -ForegroundColor White
         }
         return @{ VmExists = $true; VmIp = $sshHost }
     } else {
