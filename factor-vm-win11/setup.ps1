@@ -832,27 +832,33 @@ function Invoke-VMCreation {
             & $vbox startvm $VM_NAME --type headless 2>$null
         }
 
-        # Enable VRDE so user can connect with Remote Desktop to see VM screen
+        # Open VM monitor in separate window - shows live status + screenshots
         if (-not $Quiet) {
-            $prevEAP = $ErrorActionPreference
-            $ErrorActionPreference = 'Continue'
-            & $vbox controlvm $VM_NAME vrde on 2>&1 | Out-Null
-            $ErrorActionPreference = $prevEAP
-            
-            # Open status monitor in separate window
             $monitorScript = @"
+`$vbox = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
 Write-Host '=== STRUCTURA VM Monitor ===' -ForegroundColor Cyan
 Write-Host 'VM: $VM_NAME' -ForegroundColor White
-Write-Host 'VRDE: localhost:5000 (mstsc /v:localhost:5000)' -ForegroundColor DarkGray
 Write-Host ''
-Write-Host 'To see VM screen: open Remote Desktop (mstsc /v:localhost:5000)' -ForegroundColor Yellow
-Write-Host ''
+`$shotDir = "C:\structura\vm-screenshots"
+if (-not (Test-Path `$shotDir)) { New-Item -ItemType Directory -Path `$shotDir -Force | Out-Null }
 while (`$true) {
-    `$state = (& "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" showvminfo $VM_NAME --machinereadable 2>`$null | Select-String 'VMState=')
-    `$ip = (& "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" guestproperty get $VM_NAME "/VirtualBox/GuestInfo/Net/0/V4/IP" 2>`$null)
+    `$state = (& `$vbox showvminfo $VM_NAME --machinereadable 2>`$null | Select-String 'VMState=')
+    `$stateStr = if (`$state) { `$state -replace 'VMState=|"','' } else { 'unknown' }
+    `$ip = (& `$vbox guestproperty get $VM_NAME "/VirtualBox/GuestInfo/Net/0/V4/IP" 2>`$null)
+    `$ipStr = if (`$ip -match 'Value:\s+(\d+\.\d+\.\d+\.\d+)') { `$Matches[1] } else { 'no IP yet' }
     `$ts = Get-Date -Format 'HH:mm:ss'
-    Write-Host "`r[`$ts] State: `$(`$state -replace 'VMState=|"','')  IP: `$(`$ip -replace 'Value: ','no IP yet')" -NoNewline -ForegroundColor Green
-    Start-Sleep -Seconds 5
+    Write-Host "`r[`$ts] State: `$stateStr  IP: `$ipStr    " -NoNewline -ForegroundColor Green
+    # Take screenshot every 30 seconds
+    `$shotFile = "`$shotDir\screen.png"
+    & `$vbox controlvm $VM_NAME screenshotpng `$shotFile 2>`$null
+    if (Test-Path `$shotFile) {
+        # Open screenshot in default viewer every 60s (overwrite = refresh)
+        `$age = ((Get-Date) - (Get-Item `$shotFile).LastWriteTime).TotalSeconds
+        if (`$age -lt 1) {
+           Invoke-Item `$shotFile
+        }
+    }
+    Start-Sleep -Seconds 10
 }
 "@
             Start-Process powershell -ArgumentList "-NoExit","-Command",$monitorScript -WindowStyle Normal
