@@ -20,7 +20,7 @@ param(
     [string]$MediaPath,
 
     [Parameter(Mandatory = $false)]
-    [string]$LauncherRepo = "structura-factor/structura-factor-launchers@75ce92f65fe010d434134b4f4deb1e878bf4bfc5",
+    [string]$LauncherRepo = "structura-factor/structura-factor-launchers@fa96b29f9cc746887e42086d2468875d9f9f644c",
 
     [Parameter(Mandatory = $false)]
     [string]$ClientRepo = "structura-factor/structura-clients-sawaryn",
