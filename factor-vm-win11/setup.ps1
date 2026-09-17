@@ -783,6 +783,7 @@ function Invoke-VMCreation {
         & $vbox createvm --name $VM_NAME --ostype Ubuntu_64 --register 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --memory $VM_RAM --cpus $VM_CPU --nic1 nat --boot1 dvd --boot2 disk 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --uart1 0x3F8 4 --uartmode1 file "$LOG_DIR\vm-console.log" 2>&1 | Out-Null
+        & $vbox modifyvm $VM_NAME --vrde on --vrdeport 5000 --vrde-auth-type null 2>&1 | Out-Null
 
         # Create disk
         $diskPath = "$LOG_DIR\vm-disks\$VM_NAME.vdi"
@@ -846,14 +847,11 @@ function Invoke-VMCreation {
             & $vbox startvm $VM_NAME --type headless 2>$null
         }
 
-        # Enable VRDE and open Remote Desktop preview + status monitor
+        # Open Remote Desktop to see VM screen + status monitor
         if (-not $Quiet) {
-            $prevEAP = $ErrorActionPreference
-            $ErrorActionPreference = 'Continue'
-            & $vbox modifyvm $VM_NAME --vrde on --vrdeport 5000 --vrde-auth-type null 2>&1 | Out-Null
-            $ErrorActionPreference = $prevEAP
-
+            # VRDE was enabled via modifyvm during VM creation
             # Open Remote Desktop to see VM screen
+            Start-Sleep -Seconds 3
             Start-Process mstsc -ArgumentList "/v:localhost:5000"
 
             # Open status monitor in separate window
