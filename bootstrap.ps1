@@ -263,15 +263,10 @@ if (-not $launcherName) {
 
 Write-StructuraLog "Launcher: $launcherName"
 
-# Step 4: Fetch setup.bat from launcher repo (optional - jsDelivr blocks .bat files)
-$setupBatUrl = "$GITHUB_RAW_BASE/$LauncherRepo/$launcherName/setup.bat"
-$setupBatPath = [System.IO.Path]::GetTempFileName()
-$downloaded = Invoke-SafeDownload -Url $setupBatUrl -Destination $setupBatPath -TimeoutSec $DOWNLOAD_TIMEOUT_SEC
-
-if (-not $downloaded) {
-    Write-StructuraLog "setup.bat not available (CDN blocks .bat files) - skipping, setup.ps1 will be used directly" -Level "WARN"
-    $setupBatPath = $null
-}
+# Step 4: setup.bat is skipped - jsDelivr CDN blocks .bat files (HTTP 403)
+# setup.ps1 is used directly by bootstrap, no .bat wrapper needed
+$setupBatPath = $null
+Write-StructuraLog "setup.bat skipped (jsDelivr blocks .bat files) - using setup.ps1 directly"
 
 # Step 5: Fetch setup.ps1 from launcher repo
 $setupPs1Url = "$GITHUB_RAW_BASE/$LauncherRepo/$launcherName/setup.ps1"
