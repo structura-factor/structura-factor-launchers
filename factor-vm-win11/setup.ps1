@@ -972,45 +972,54 @@ function Get-VmIpAndSsh {
         Write-Host "  Setting up SSH key authentication..." -ForegroundColor White
         
         # Get the public key from the deploy key
-        $pubKey = $null
-        if ($DeployKeyPath -and (Test-Path $DeployKeyPath)) {
-            $pubKey = (ssh-keygen -y -f $DeployKeyPath 2>$null)
-        }
-        
+        # Wait for SSH key auth (key installed via --post-install-command during unattended install)
         $sshStable = $false
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
-        for ($i = 0; $i -lt 12; $i++) {
+        for ($i = 0; $i -lt 30; $i++) {
             try {
-                if ($pubKey) {
-                    # Try key-based auth first
-                    $sshTest = ssh -p $sshPort -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes -i $DeployKeyPath $sshHost "echo SSH_OK" 2>$null
-                    if ($sshTest -match 'SSH_OK') {
-                        $sshStable = $true
-                        Write-Check "SSH key auth working"
-                        break
-                    }
-                }
-                
-                # Try password-based auth using helper
-                $sshTest = Invoke-SshWithPassword -Command "echo SSH_OK" -Host $sshHost -Port $sshPort
+                $sshTest = ssh -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=10 -o BatchMode=yes -i "$env:USERPROFILE\.ssh\id_ed25519" $sshHost "echo SSH_OK" 2>$null
                 if ($sshTest -match 'SSH_OK') {
-                    # Password works - install the key for future use
-                    if ($pubKey) {
-                        Install-SshKeyOnVm -PublicKey $pubKey -HostName $sshHost -Port $sshPort | Out-Null
-                        Write-Check "SSH key installed on VM"
-                    }
                     $sshStable = $true
-                    Write-Check "SSH ready (password auth) on ${sshHost}:${sshPort}"
                     break
                 }
             } catch { }
+            if ($i % 3 -eq 0) {
+                $min = [math]::Floor($i * 10 / 60)
+                Write-Host "  [${min}min] Waiting for SSH key auth..." -ForegroundColor DarkGray
+            }
             Start-Sleep -Seconds 10
         }
-        
         $ErrorActionPreference = $prevEAP
-        if (-not $sshStable) {
-            Write-Check "SSH not fully ready" -Warn
+        
+        if ($sshStable) {
+            Write-Check "SSH ready (key auth) on ${sshHost}:${sshPort}"
+        } else {
+            Write-Check "SSH key auth failed, trying password install..." -Warn
+            # Last resort: try SSH_ASKPASS to install key with password
+            $askPass = "$env:TEMP\ssh-pass.cmd"
+            "echo structura" | Out-File -FilePath $askPass -Encoding ASCII -Force
+            $env:SSH_ASKPASS = $askPass
+            $env:SSH_ASKPASS_REQUIRE = "force"
+            $env:DISPLAY = "x"
+            $pubKey = (ssh-keygen -y -f "$env:USERPROFILE\.ssh\id_ed25519" 2>$null)
+            if ($pubKey) {
+                $prevEAP = $ErrorActionPreference
+                $ErrorActionPreference = 'Continue'
+                $installCmd = "mkdir -p ~/.ssh && echo '$pubKey' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+                ssh -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o PreferredAuthentications=password -o PubkeyAuthentication=no $sshHost $installCmd 2>$null
+                $ErrorActionPreference = $prevEAP
+                Start-Sleep -Seconds 3
+                $sshTest = ssh -p $sshPort -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes -i "$env:USERPROFILE\.ssh\id_ed25519" $sshHost "echo SSH_OK" 2>$null
+                if ($sshTest -match 'SSH_OK') {
+                    $sshStable = $true
+                    Write-Check "SSH key auth working after manual install"
+                }
+            }
+            Remove-Item $askPass -Force -ErrorAction SilentlyContinue
+            Remove-Item env:\SSH_ASKPASS -ErrorAction SilentlyContinue
+            Remove-Item env:\SSH_ASKPASS_REQUIRE -ErrorAction SilentlyContinue
+            Remove-Item env:\DISPLAY -ErrorAction SilentlyContinue
         }
         return @{ VmExists = $true; VmIp = $sshHost }
     } else {
