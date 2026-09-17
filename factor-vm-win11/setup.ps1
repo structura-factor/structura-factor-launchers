@@ -510,7 +510,9 @@ function Invoke-MediaSourcing {
             $expected = $expectedSha[$UBUNTU_ISO_NAME]
             if ($expected -and $sha -eq $expected) {
                 Write-Check "Ubuntu ISO: OneDrive (SHA256 OK)"
-                Copy-Item $oneDriveIso $isoPath -Force
+                if ((Resolve-Path $oneDriveIso).Path -ne (Resolve-Path $isoPath -ErrorAction SilentlyContinue).Path) {
+                    Copy-Item $oneDriveIso $isoPath -Force
+                }
                 $isoExists = $true
             } else {
                 Write-Check "Ubuntu ISO: OneDrive SHA256 mismatch - will download" -Warn
@@ -560,8 +562,12 @@ function Invoke-MediaSourcing {
             # Save to OneDrive if available (first-user workflow)
             if ($useOneDrive) {
                 $oneDriveIso = Join-Path $MediaPath $UBUNTU_ISO_NAME
-                Write-Host "  Saving ISO to OneDrive for future use..." -ForegroundColor White
-                Copy-Item $isoPath $oneDriveIso -Force -ErrorAction SilentlyContinue
+                $isoResolved = Resolve-Path $isoPath -ErrorAction SilentlyContinue
+                $oneResolved = Resolve-Path $oneDriveIso -ErrorAction SilentlyContinue
+                if ($isoResolved -and $oneResolved -and $isoResolved.Path -ne $oneResolved.Path) {
+                    Write-Host "  Saving ISO to OneDrive for future use..." -ForegroundColor White
+                    Copy-Item $isoPath $oneDriveIso -Force -ErrorAction SilentlyContinue
+                }
             }
         }
     }
@@ -576,7 +582,9 @@ function Invoke-MediaSourcing {
             $expected = $expectedSha[$VBOX_INSTALLER_NAME]
             if ($expected -and $sha -eq $expected) {
                 Write-Check "VirtualBox: OneDrive (SHA256 OK)"
-                Copy-Item $oneDriveVbox $vboxPath -Force
+                if ((Resolve-Path $oneDriveVbox).Path -ne (Resolve-Path $vboxPath -ErrorAction SilentlyContinue).Path) {
+                    Copy-Item $oneDriveVbox $vboxPath -Force
+                }
                 $vboxExists = $true
             }
         }
@@ -636,7 +644,11 @@ function Invoke-MediaSourcing {
             # Save to OneDrive
             if ($useOneDrive) {
                 $oneDriveVbox = Join-Path $MediaPath $VBOX_INSTALLER_NAME
-                Copy-Item $vboxPath $oneDriveVbox -Force -ErrorAction SilentlyContinue
+                $vboxResolved = Resolve-Path $vboxPath -ErrorAction SilentlyContinue
+                $oneVboxResolved = Resolve-Path $oneDriveVbox -ErrorAction SilentlyContinue
+                if ($vboxResolved -and $oneVboxResolved -and $vboxResolved.Path -ne $oneVboxResolved.Path) {
+                    Copy-Item $vboxPath $oneDriveVbox -Force -ErrorAction SilentlyContinue
+                }
             }
         } catch {
             Write-Check "VirtualBox download/install failed: $_" -Fail
