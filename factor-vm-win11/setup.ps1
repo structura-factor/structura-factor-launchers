@@ -767,7 +767,7 @@ function Invoke-VMCreation {
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         & $vbox createvm --name $VM_NAME --ostype Ubuntu_64 --register 2>&1 | Out-Null
-        & $vbox modifyvm $VM_NAME --memory $VM_RAM --cpus $VM_CPU --nic1 bridged --boot1 dvd --boot2 disk 2>&1 | Out-Null
+        & $vbox modifyvm $VM_NAME --memory $VM_RAM --cpus $VM_CPU --nic1 nat --boot1 dvd --boot2 disk 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --uart1 0x3F8 4 --uartmode1 file "$LOG_DIR\vm-console.log" 2>&1 | Out-Null
 
         # Create disk
@@ -800,17 +800,23 @@ function Invoke-VMCreation {
         $isoFilePath = $Media['IsoPath']
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
-        & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local --start-vm=headless 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura.local 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
         $unattendedExit = $LASTEXITCODE
         $ErrorActionPreference = $prevEAP
         Write-Log "Unattended install exit code: $unattendedExit"
         
         if ($unattendedExit -ne 0) {
             Write-Host "    VBoxManage unattended install failed (exit $unattendedExit)" -ForegroundColor Yellow
+            # VM might be locked from failed attempt - poweroff and wait
+            $isVmRunning = (& $vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState="running"')
+            if ($isVmRunning) {
+                & $vbox controlvm $VM_NAME poweroff 2>&1 | Out-Null
+                Start-Sleep -Seconds 5
+            }
             Write-Host "    Trying minimal args..." -ForegroundColor Yellow
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
-            & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --time-zone=Europe/Warsaw --hostname=structura.local 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            & $vbox unattended install $VM_NAME --iso="$isoFilePath" --user=structura --password=structura --time-zone=Europe/Warsaw --hostname=structura.local --start-vm=headless 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
             $unattendedExit = $LASTEXITCODE
             $ErrorActionPreference = $prevEAP
             Write-Log "Unattended install (minimal) exit code: $unattendedExit"
