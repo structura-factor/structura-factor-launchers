@@ -28,8 +28,8 @@ $KEYS_DIR = "$BASE_DIR\klucze"
 $MEDIA_DIR = "$BASE_DIR\media"
 $LOGS_DIR = "$BASE_DIR\logs"
 $LOG_FILE = "$LOGS_DIR\setup.log"
-$UBUNTU_ISO_NAME = "ubuntu-24.04.1-server-amd64.iso"
-$VBOX_INSTALLER_NAME = "VirtualBox-7.1.4-Win.exe"
+$UBUNTU_ISO_NAME = "ubuntu-24.04.5-live-server-amd64.iso"
+$VBOX_INSTALLER_NAME = "VirtualBox-7.1.16-172425-Win.exe"
 
 # --- Logowanie ---
 function W-Log([string]$Msg) {
