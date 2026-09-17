@@ -855,22 +855,25 @@ function Invoke-VMCreation {
             Start-Process mstsc -ArgumentList "/v:localhost:5000"
 
             # Open status monitor in separate window
-            $monitorScript = @"
-Write-Host '=== STRUCTURA VM Monitor ===' -ForegroundColor Cyan
-Write-Host 'VM: $VM_NAME  |  Remote Desktop: localhost:5000' -ForegroundColor White
-Write-Host ''
-while (`$true) {
-    `$vbox = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
-    `$state = (& `$vbox showvminfo $VM_NAME --machinereadable 2>`$null | Select-String 'VMState=')
-    `$stateStr = if (`$state) { `$state -replace 'VMState=|"','' } else { 'unknown' }
-    `$ip = (& `$vbox guestproperty get $VM_NAME "/VirtualBox/GuestInfo/Net/0/V4/IP" 2>`$null)
-    `$ipStr = if (`$ip -match 'Value:\s+(\d+\.\d+\.\d+\.\d+)') { `$Matches[1] } else { 'no IP yet' }
-    `$ts = Get-Date -Format 'HH:mm:ss'
-    Write-Host "`r[`$ts] State: `$stateStr  IP: `$ipStr    " -NoNewline -ForegroundColor Green
-    Start-Sleep -Seconds 5
+            # Write monitor script to temp file and execute (avoids here-string escaping issues)
+            $monitorFile = "$LOG_DIR\vm-monitor.ps1"
+            @'
+$ErrorActionPreference = 'Continue'
+$vbox = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
+Write-Host "=== STRUCTURA VM Monitor ===" -ForegroundColor Cyan
+Write-Host "Remote Desktop: localhost:5000 (mstsc /v:localhost:5000)" -ForegroundColor White
+Write-Host ""
+while ($true) {
+    $state = (& $vbox showvminfo structura-sawaryn --machinereadable 2>$null | Select-String "VMState=")
+    $stateStr = if ($state) { ($state -replace 'VMState=|"','') } else { "unknown" }
+    $ipRaw = (& $vbox guestproperty get structura-sawaryn "/VirtualBox/GuestInfo/Net/0/V4/IP" 2>$null)
+    $ipStr = if ($ipRaw -match "Value:\s+(\d+\.\d+\.\d+\.\d+)") { $Matches[1] } else { "no IP yet" }
+    $ts = Get-Date -Format "HH:mm:ss"
+    Write-Host "[$ts] State: $stateStr  IP: $ipStr" -ForegroundColor Green
+    Start-Sleep -Seconds 10
 }
-"@
-            Start-Process powershell -ArgumentList "-NoExit","-Command",$monitorScript -WindowStyle Normal
+'@ | Out-File -FilePath $monitorFile -Encoding ASCII -Force
+            Start-Process powershell -ArgumentList "-NoExit","-File",$monitorFile -WindowStyle Normal
         }
     }
 
