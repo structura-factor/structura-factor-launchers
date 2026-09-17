@@ -736,7 +736,7 @@ function Invoke-VMCreation {
 
     # Create VM
     & $vbox createvm --name $VM_NAME --ostype Ubuntu_64 --register 2>$null
-    & $vbox modifyvm $VM_NAME --memory $VM_RAM --cpus $VM_CPU --nic1 bridged --cableconnect1 on --boot1 dvd --boot2 disk
+    & $vbox modifyvm $VM_NAME --memory $VM_RAM --cpus $VM_CPU --nic1 bridged --boot1 dvd --boot2 disk
     & $vbox modifyvm $VM_NAME --uart1 0x3F8 4 --uartmode1 file "$LOG_DIR\vm-console.log"
 
     # Create disk
