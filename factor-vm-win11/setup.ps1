@@ -786,13 +786,31 @@ function Invoke-VMCreation {
 
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
-        & $vbox unattended install $VM_NAME --iso=$Media.IsoPath --user=structura --password=structura --full-user-name="STRUCTURA" --install-additions --time-zone=Europe/Warsaw --locale=pl_PL.UTF-8 --country=PL --hostname=structura.local 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        & $vbox unattended install $VM_NAME --iso=$Media.IsoPath --user=structura --password=structura --full-user-name="STRUCTURA" --time-zone=Europe/Warsaw --hostname=structura --start-vm=headless 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        $unattendedExit = $LASTEXITCODE
         $ErrorActionPreference = $prevEAP
+        Write-Log "Unattended install exit code: $unattendedExit"
+        
+        if ($unattendedExit -ne 0) {
+            Write-Host "    VBoxManage unattended install failed (exit $unattendedExit)" -ForegroundColor Yellow
+            Write-Host "    Trying without --start-vm..." -ForegroundColor Yellow
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            & $vbox unattended install $VM_NAME --iso=$Media.IsoPath --user=structura --password=structura --time-zone=Europe/Warsaw 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            $unattendedExit = $LASTEXITCODE
+            $ErrorActionPreference = $prevEAP
+            Write-Log "Unattended install (minimal) exit code: $unattendedExit"
+        }
 
-        Write-Check "Unattended install started"
+        if ($unattendedExit -eq 0) {
+            Write-Check "Unattended install completed"
+        }
 
-        # Start VM
-        & $vbox startvm $VM_NAME --type headless 2>$null
+        # Start VM if not already started by --start-vm
+        $vmRunning = (& $vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState="running"')
+        if (-not $vmRunning) {
+            & $vbox startvm $VM_NAME --type headless 2>$null
+        }
 
         # Open VM console in separate window for visibility
         if (-not $Quiet) {
