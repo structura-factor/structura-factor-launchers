@@ -983,23 +983,72 @@ function Invoke-VMCreation {
             $pubKey = Get-SshPublicKey -PrivateKeyPath $DeployKeyPath
         }
         if (-not $pubKey) {
-            Write-Log "Nie udalo sie wyznaczyc klucza publicznego z $DeployKeyPath" -Level "WARN"
+            # Twarda porazka zamiast ostrzezenia - bez klucza caly deployment i tak
+            # sie zatrzyma (nie da sie sklonowac prywatnych repo), a diagnostyka
+            # "po fakcie" jest droga. Lepiej przerwac TERAZ, przed 15 min instalacji.
+            Write-Log "Nie udalo sie wyznaczyc klucza publicznego z $DeployKeyPath" -Level "ERROR"
+            Write-Check "Nie moge odczytac klucza publicznego z: $DeployKeyPath" -Fail
+            Write-Host "    Oczekiwany plik .pub obok klucza prywatnego, np.:" -ForegroundColor Yellow
+            Write-Host "      $DeployKeyPath.pub" -ForegroundColor DarkGray
+            Write-Host "    Albo poprawny klucz prywatny (bez .pub), z ktorego da sie go wyliczyc." -ForegroundColor Yellow
+            throw "Brak klucza publicznego - przerwano przed utworzeniem VM"
         }
-        # Use --post-install-template: a script file on host that gets copied to VM and executed
+        Write-Log "Klucz publiczny klienta: $($pubKey.Substring(0, [Math]::Min(50, $pubKey.Length)))..."
+
+        # Wgranie klucza publicznego do authorized_keys WEWNATRZ goscia.
+        #
+        # JAK TO DZIALA (potwierdzone w zrodlach VirtualBox + subiquity):
+        #   Szablon VirtualBox "ubuntu_autoinstall_user_data" zawiera late-commands:
+        #     - cp /cdrom/vboxpostinstall.sh /target/root/vboxpostinstall.sh
+        #     - curtin in-target --target=/target -- /bin/bash /root/vboxpostinstall.sh --direct
+        #   czyli --post-install-template JEST wykonywany. Nie wykonywal sie
+        #   w naszej instalacji, bo plik byl zapisany z CRLF ("Out-File"),
+        #   przez co shebang to "#!/bin/bash<CR>" i jadro nie znajdowalo interpretera.
+        #
+        # Uzywamy DWOCH mechanizmow (nadmiarowo, oba niezalezne):
+        #   1) --post-install-command - "command to run after the installation
+        #      is completed"; wykonywane na koncu w gosciu.
+        #   2) --post-install-template - plik skryptu (teraz zapisany z LF).
+        #
+        # Komenda (1) jest kodowana base64 - zero problemow z cytowaniem
+        # w YAML autoinstall i w shellu goscia (spacje, cudzyslowy, znak dolara).
+        $keyLine = if ($pubKey) { $pubKey } else { "" }
+        $cmdPlain = "mkdir -p /home/structura/.ssh && chmod 700 /home/structura/.ssh && printf '%s\n' '" + $keyLine + "' >> /home/structura/.ssh/authorized_keys && chmod 600 /home/structura/.ssh/authorized_keys && chown -R structura:structura /home/structura/.ssh && systemctl enable ssh ; systemctl restart ssh"
+        $cmdB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cmdPlain))
+        $postInstallCommand = "echo $cmdB64 | base64 -d | bash"
+
+        # --- Mechanizm (2): plik skryptu post-install (siatka bezpieczenstwa) ---
+        # UWAGA: MUSI byc zapisany z LF, nie CRLF. PowerShell "Out-File" lamie
+        # linie CRLF, przez co shebang staje sie "#!/bin/bash<CR>" i jadro szuka
+        # nieistniejącego interpretera "/bin/bash<CR>" -> skrypt NIE WYKONUJE SIE.
+        # To byla przyczyna, ze klucz nie trafial na VM.
         $postInstallScript = "$LOG_DIR\post-install.sh"
-        "#!/bin/bash" | Out-File -FilePath $postInstallScript -Encoding ASCII -Force
-        "# Install SSH key for key-based auth" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-        "mkdir -p /home/structura/.ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-        if ($pubKey) {
-            "echo ''$pubKey'' >> /home/structura/.ssh/authorized_keys" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-        }
-        "chmod 600 /home/structura/.ssh/authorized_keys" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-        "chown -R structura:structura /home/structura/.ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-        "systemctl enable ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-        "systemctl restart ssh" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-        "# Auto-reboot after install" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-        "sleep 3 && reboot" | Out-File -FilePath $postInstallScript -Encoding ASCII -Append
-        
+        $keyLine = if ($pubKey) { $pubKey } else { "" }
+        $shText = @'
+#!/bin/bash
+# Struktura FACTOR - wgranie klucza deploy do authorized_keys
+# Wywolywane przez VirtualBox: curtin in-target -- /bin/bash /root/vboxpostinstall.sh --direct
+TARGET=/
+# Bez "set -u": VirtualBox/subiquity wywoluje ten skrypt bez argumentow
+# ("/bin/bash /root/vboxpostinstall.sh"), a "$1" na nieustawionej zmiennej
+# przerywalby skrypt w trybie set -u.
+if [ "${1:-}" = "--direct" ] || [ -z "${1:-}" ]; then TARGET=/; else TARGET=/target; fi
+install -d -m 700 "$TARGET/home/structura/.ssh" 2>/dev/null || mkdir -p "$TARGET/home/structura/.ssh"
+printf '%s
+' 'KEY_PLACEHOLDER' >> "$TARGET/home/structura/.ssh/authorized_keys"
+chmod 600 "$TARGET/home/structura/.ssh/authorized_keys" 2>/dev/null || true
+chmod 700 "$TARGET/home/structura/.ssh"
+chown -R structura:structura "$TARGET/home/structura/.ssh" 2>/dev/null || true
+systemctl enable ssh 2>/dev/null || true
+echo "post-install: authorized_keys gotowe"
+'@
+        $shText = $shText.Replace('KEY_PLACEHOLDER', $keyLine)
+        # LF wymuszone jawnie (Replace usuwa ewentualne CR z here-stringa)
+        $shText = ($shText -replace "`r`n", "`n")
+        [System.IO.File]::WriteAllText($postInstallScript, $shText, [System.Text.UTF8Encoding]::new($false))
+
+        Write-Log "post-install-command: $postInstallCommand"
+
         $unattendedArgs = @(
             "unattended", "install", $VM_NAME,
             "--iso=$isoFilePath",
@@ -1008,6 +1057,7 @@ function Invoke-VMCreation {
             "--full-user-name=STRUCTURA",
             "--time-zone=Europe/Warsaw",
             "--hostname=structura.local",
+            "--post-install-command=$postInstallCommand",
             "--post-install-template=$postInstallScript"
         )
         & $vbox @unattendedArgs 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
