@@ -4,5 +4,5 @@ launcher: factor-vm-win11
 version: "1.0"
 repos:
   core: git@github.com:structura-factor/structura-core.git
-  client: git@github.com:structura-factor/structura-clients.git
+  client: git@github.com:structura-factor/structura-clients-sawaryn.git
 deploy_key_url: ""  # Pusty - klucz przekazany przez -DeployKeyPath

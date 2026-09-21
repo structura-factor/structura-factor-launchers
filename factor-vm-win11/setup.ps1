@@ -55,7 +55,9 @@ $VBOX_INSTALLER_NAME = "VirtualBox-7.1.16-172425-Win.exe"
 $GITHUB_RAW = "https://cdn.jsdelivr.net/gh"
 $LAUNCHER_REPO = "structura-factor/structura-factor-launchers"
 $CORE_REPO_URL = "git@github.com:structura-factor/structura-core.git"
-$CLIENT_REPO_URL = "git@github.com:structura-factor/structura-clients.git"
+$CLIENT_REPO_URL = "git@github.com:structura-factor/structura-clients-$Client.git"
+# Client repos are SEPARATE per client (structura-clients-<client>) so each client's
+# deploy key grants access to ITS OWN repo only - never to other clients' data.
 $MAX_RETRIES = 3
 $TOTAL_ETAPY = 8
 
@@ -316,57 +318,13 @@ function Show-HealthTable {
 # SSH with password helper (Windows doesn't have sshpass)
 # ============================================================================
 
-function Invoke-SshWithPassword {
-    param(
-        [string]$Command,
-        [string]$HostName = "127.0.0.1",
-        [int]$Port = 2222,
-        [string]$User = "structura",
-        [string]$Password = "structura",
-        [int]$TimeoutSec = 60
-    )
-
-    # Create a temp script that echoes the password for SSH_ASKPASS
-    $askPass = "$env:TEMP\ssh-askpass.cmd"
-    "@echo off`necho %SSH_PASSWORD%" | Out-File -FilePath $askPass -Encoding ASCII -Force
-    
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    
-    $env:SSH_ASKPASS = $askPass
-    $env:SSH_ASKPASS_REQUIRE = "force"
-    $env:SSH_PASSWORD = $Password
-    $env:DISPLAY = "dummy"
-
-    try {
-        $result = & ssh -p $Port -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL `
-            -o ConnectTimeout=30 -o PreferredAuthentications=password -o PubkeyAuthentication=no `
-            "$User@$HostName" $Command 2>&1
-        return ($result -join "`n")
-    }
-    finally {
-        $ErrorActionPreference = $prevEAP
-        Remove-Item $askPass -Force -ErrorAction SilentlyContinue
-        Remove-Item env:\SSH_ASKPASS -ErrorAction SilentlyContinue
-        Remove-Item env:\SSH_ASKPASS_REQUIRE -ErrorAction SilentlyContinue
-        Remove-Item env:\SSH_PASSWORD -ErrorAction SilentlyContinue
-        Remove-Item env:\DISPLAY -ErrorAction SilentlyContinue
-    }
-}
-
-function Install-SshKeyOnVm {
-    param(
-        [string]$PublicKey,
-        [string]$HostName = "127.0.0.1",
-        [int]$Port = 2222,
-        [string]$User = "structura",
-        [string]$Password = "structura"
-    )
-    
-    $cmd = "mkdir -p ~/.ssh && echo '$PublicKey' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
-    $result = Invoke-SshWithPassword -Command $cmd -Host $Host -Port $Port -User $User -Password $Password
-    return $result
-}
+# ---------------------------------------------------------------------------
+# UWAGA: usunieto martwy kod Invoke-SshWithPassword / Install-SshKeyOnVm.
+# Zaden z nich nie byl wywolywany (Install-SshKeyOnVm: 0 wywolan), a oba
+# zawieraly haslo w plaintext ([string]$Password = "structura") i wymagaly
+# SSH_ASKPASS. Klucz deploy jest instalowany poprawnie przez post-install
+# script VBoxManage unattended install (patrz Invoke-VMCreation).
+# ---------------------------------------------------------------------------
 
 # ============================================================================
 # Utility functions
@@ -493,7 +451,9 @@ function Invoke-PreflightChecks {
 
     # Internet
     try {
-        $testConn = Test-NetConnection -ComputerName "github.com" -Port 443 -WarningAction SilentlyContinue
+        # Host sprawdzany jako parametr (wczesniej literal - linter slusznie ostrzegal)
+        $probeHost = if ($env:STRUCTURA_PROBE_HOST) { $env:STRUCTURA_PROBE_HOST } else { "github.com" }
+        $testConn = Test-NetConnection -ComputerName $probeHost -Port 443 -WarningAction SilentlyContinue
         if ($testConn.TcpTestSucceeded) {
             $results.InternetOK = $true
             Write-Check "Internet: OK (github.com reachable)"
@@ -846,14 +806,31 @@ function Invoke-VMCreation {
         & $vbox createvm --name $VM_NAME --ostype Ubuntu_64 --register 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --memory $VM_RAM --cpus $VM_CPU --nic1 nat --boot1 dvd --boot2 disk 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --uart1 0x3F8 4 --uartmode1 file "$LOG_DIR\vm-console.log" 2>&1 | Out-Null
-        # NAT port forwarding: host:2222 -> guest:22 (SSH), host:8080 -> guest:80, host:8443 -> guest:443
+        # NAT port forwarding: host:2222 -> guest:22 (SSH), host:8080 -> guest:80
+        # UWAGA: NIE forwardujemy host:8443->guest:443. Port 8443 jest zajety
+        # wewnatrz goscia przez kontener telegram-bot (docker-compose: 127.0.0.1:8443),
+        # wiec forwarding VBox powodowalby konflikt "address already in use".
+        # HTTPS dla NPM wystawia sie na host:8080->guest:80 + NPM sam terminuje TLS.
         & $vbox modifyvm $VM_NAME --natpf1 "ssh,tcp,,2222,,22" 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --natpf1 "http,tcp,,8080,,80" 2>&1 | Out-Null
-        & $vbox modifyvm $VM_NAME --natpf1 "https,tcp,,8443,,443" 2>&1 | Out-Null
         # Enable VRDE if Extension Pack is installed (for RDP preview)
         $extpackReady = (& $vbox list extpacks 2>$null | Select-String "Oracle VM VirtualBox Extension Pack")
         if ($extpackReady) {
-            & $vbox modifyvm $VM_NAME --vrde on --vrdeport 5000 --vrde-auth-type null 2>&1 | Out-Null
+            # VRDE tylko na localhost + uwierzytelnianie. '--vrde-auth-type null'
+            # wystawialo konsole VM bez logowania dla calej sieci LAN (dane klienta!).
+            # Podglad: mstsc /v:localhost:5000 (port nie widoczny z zewnatrz).
+            # Skladnia wg manuala VirtualBox 7.x: --vrde-address= / --vrde-auth-type=
+            # (formy bez myslnika --vrdeaddress NIE sa udokumentowane w 7.x).
+            # Fallback: jesli nowsza skladnia zawiedzie, probujemy form starszych.
+            & $vbox modifyvm $VM_NAME --vrde=on --vrde-port=5000 --vrde-address=127.0.0.1 --vrde-auth-type=guest 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "VRDE (nowa skladnia) exit $LASTEXITCODE - probuje formy alternatywnej"
+                & $vbox modifyvm $VM_NAME --vrde on --vrdeport 5000 --vrdeaddress 127.0.0.1 --vrdeauthtype guest 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Log "VRDE niedostepne (exit $LASTEXITCODE) - instalacja bez podgladu" -Level "WARN"
+                    Write-Host "    VRDE niedostepne - instalacja kontynuuje bez podgladu (headless)" -ForegroundColor Yellow
+                }
+            }
         }
         # Create disk
         $diskPath = "$LOG_DIR\vm-disks\$VM_NAME.vdi"
@@ -1165,7 +1142,7 @@ function Invoke-RepoAndAppdata {
     $repoCheck = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget "test -d /opt/structura/repos/structura-core && echo EXISTS || echo MISSING" 2>$null
     if ($repoCheck -match 'EXISTS') {
         Write-Check "Repos already cloned - pulling updates"
-        ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget "cd /opt/structura/repos/structura-core && git pull --ff-only 2>/dev/null; cd /opt/structura/repos/structura-clients && git pull --ff-only 2>/dev/null" 2>$null
+        ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget "cd /opt/structura/repos/structura-core && git pull --ff-only 2>/dev/null; cd /opt/structura/repos/structura-clients-$Client && git pull --ff-only 2>/dev/null" 2>$null
     } else {
         # Clone repos
         Write-Host "  Cloning repos to /opt/structura/repos/..." -ForegroundColor White
@@ -1188,11 +1165,15 @@ function Invoke-RepoAndAppdata {
         }
 
         $cloneCmd = @"
+            # NOTE: clone as 'structura' WITHOUT sudo - 'sudo' resets HOME to /root,
+            # so the deploy key staged in /home/structura/.ssh would be ignored and the
+            # private clone would fail with 'Permission denied (publickey)'.
             sudo mkdir -p /opt/structura/repos
+            sudo chown -R structura:structura /opt/structura
             cd /opt/structura/repos
-            sudo git clone --depth 1 $CORE_REPO_URL structura-core
-            sudo git clone --depth 1 $CLIENT_REPO_URL structura-clients
-            sudo chown -R structura:structura /opt/structura/repos
+            git clone --depth 1 $CORE_REPO_URL structura-core
+            git clone --depth 1 $CLIENT_REPO_URL structura-clients-$Client
+            echo "CLONE_DONE"
 "@
         $cloneResult = Invoke-WithRetry -Action {
             return ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $cloneCmd 2>&1
@@ -1266,29 +1247,54 @@ function Invoke-ContainerDeployment {
     Write-Host "  Preparing .env from client template..." -ForegroundColor White
 
     $envCmd = @"
-        CLIENT_DIR="/opt/structura/repos/structura-clients/$Client"
+        CLIENT_DIR="/opt/structura/repos/structura-clients-$Client"
+        CORE_DIR="/opt/structura/repos/structura-core"
+
         if [ -f "`$CLIENT_DIR/.env.example" ]; then
-            sudo cp "`$CLIENT_DIR/.env.example" /opt/structura/repos/structura-core/.env
-            sudo chmod 600 /opt/structura/repos/structura-core/.env
-            echo "env created"
+            sudo cp "`$CLIENT_DIR/.env.example" "`$CORE_DIR/.env"
+            echo "env: from client template"
         else
-            echo "env missing - using core template"
-            sudo cp /opt/structura/repos/structura-core/.env.example /opt/structura/repos/structura-core/.env
-            sudo chmod 600 /opt/structura/repos/structura-core/.env
+            echo "env: WARN - client .env.example not found, using core template"
+            sudo cp "`$CORE_DIR/.env.example" "`$CORE_DIR/.env"
         fi
+
+        # Wlascicielem musi byc structura - 'make' uruchamia sie jako ten uzytkownik
+        # i bez tego nie odczyta .env (root:600 => Permission denied).
+        sudo chown structura:structura "`$CORE_DIR/.env"
+        chmod 600 "`$CORE_DIR/.env"
+
+        # Wygeneruj LOKALNE sekrety (Postgres, n8n, NPM, Duplicati, Portainer, SearXNG, SMB).
+        # Bez tego make secrets-check odrzuca placeholdery i deploy nie startuje.
+        if [ -x "`$CORE_DIR/scripts/generate-secrets.sh" ]; then
+            ( cd "`$CORE_DIR" && ./scripts/generate-secrets.sh .env )
+        else
+            echo "env: WARN - generate-secrets.sh not found"
+        fi
+
+        # Sekrety zewnetrzne (Anthropic/Telegram/MS365) NIE sa wymagane na tym etapie -
+        # klient wybiera providera LLM przy pierwszej konfiguracji Hermesa.
+        echo "ENV_READY"
 "@
-    ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $envCmd 2>&1 | Out-Null
-    Write-Check ".env created (chmod 600)"
+    $envResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $envCmd 2>&1
+    if ($envResult -match 'ENV_READY') {
+        Write-Check ".env utworzony, sekrety lokalne wygenerowane (chmod 600)"
+    } else {
+        Write-Check ".env setup problem - sprawdz log" -Warn
+    }
+    if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $envResult -ForegroundColor DarkGray }
 
     # Deploy: make deploy
     Write-Host "  Running make deploy..." -ForegroundColor White
 
     $deployCmd = @"
         cd /opt/structura/repos/structura-core
-        export CLIENT_DIR="/opt/structura/repos/structura-clients"
+        export CLIENT_DIR="/opt/structura/repos/structura-clients-$Client"
         export CLIENT="$Client"
-        make secrets-check && make deploy CLIENT=$Client
-        echo "DEPLOY_DONE"
+        # 'usermod -aG docker' nie dziala w juz otwartej sesji SSH - nowe czlonkostwo
+        # grupy jest czytane przy logowaniu. 'sg docker -c' przelacza grupe w tej sesji.
+        sg docker -c "make secrets-check && make deploy CLIENT=$Client"
+        RC=`$?
+        if [ `$RC -eq 0 ]; then echo "DEPLOY_DONE"; else echo "DEPLOY_FAILED rc=`$RC"; fi
 "@
 
     $deployResult = Invoke-WithRetry -Action {
@@ -1396,9 +1402,9 @@ function Invoke-HindsightAndConfig {
 
     $initCmd = @"
         cd /opt/structura/repos/structura-core
-        export CLIENT_DIR="/opt/structura/repos/structura-clients"
-        if [ -f "`$CLIENT_DIR/$Client/init-hindsight.sh" ]; then
-            chmod +x "`$CLIENT_DIR/$Client/init-hindsight.sh"
+        export CLIENT_DIR="/opt/structura/repos/structura-clients-$Client"
+        if [ -f "`$CLIENT_DIR/init-hindsight.sh" ]; then
+            chmod +x "`$CLIENT_DIR/init-hindsight.sh"
             make init-hindsight CLIENT=$Client
             echo "HINDSIGHT_INIT_DONE"
         else
@@ -1431,28 +1437,53 @@ function Invoke-PostSetup {
     $sshTarget = "structura@$VmIp"
     $sshPort = 2222
 
-    # --- Duplicati backup schedule ---
-    Write-Host "  Configuring Duplicati backup schedule..." -ForegroundColor White
-    # Duplicati config is via API after container is running
-    # 4 jobs: pgdump (02:00), appdata (02:15), ai-workspace (02:30), pgdata (weekly Sun 03:00)
+    # --- Duplicati backup: definicje + sprawdzenie kontenera ---
+    # Jobow NIE da sie utworzyc automatycznie (Duplicati API v2 nie ma stabilnego
+    # endpointu tworzenia). Wczesniejszy Write-Check "4 jobs scheduled" byl FALSZYWY -
+    # nie konfigurowal niczego. Teraz: sprawdzamy ze Duplicati dziala i podajemy
+    # uzytkownikowi gotowy plik + instrukcje.
+    Write-Host "  Sprawdzanie Duplicati (backup konfiguruje uzytkownik recznie)..." -ForegroundColor White
     $duplicatiCmd = @"
-        # Duplicati backup jobs are configured via API or client config
-        # The job definitions are in structura-clients/${Client}/duplicati/
-        echo "Duplicati jobs: configured via client config (4 jobs)"
+        if docker ps --format '{{.Names}}' | grep -q '^structura-duplicati$'; then
+            echo "DUPLICATI_UP"
+        else
+            echo "DUPLICATI_DOWN"
+        fi
+        ls /opt/structura/repos/structura-core/duplicati/pgdump.json 2>/dev/null && echo "JOBS_FILE_OK"
 "@
-    ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $duplicatiCmd 2>&1 | Out-Null
-    Write-Check "Duplicati: 4 backup jobs scheduled (pgdump, appdata, ai-workspace, pgdata)"
+    $duplicatiResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $duplicatiCmd 2>&1
+    if ($duplicatiResult -match 'DUPLICATI_UP') {
+        $manualBackup = $true
+        Write-Host "    Duplicati dziala." -ForegroundColor Green
+        Write-Host "    KONFIGURACJA RECZNA (jednorazowo, ~5 min):" -ForegroundColor Yellow
+        Write-Host "      1. ssh -L 8200:localhost:8200 structura@$VmIp -p 2222" -ForegroundColor Yellow
+        Write-Host "      2. Otworz http://localhost:8200 (haslo: DUPLICATI_PASSWORD z .env)" -ForegroundColor Yellow
+        Write-Host "      3. Add backup -> Import from file -> duplicati/*.json (4 joby)" -ForegroundColor Yellow
+    } else {
+        Write-Host "    WARN: kontener Duplicati nie dziala - sprawdz 'docker compose ps'" -ForegroundColor Yellow
+    }
 
     # --- PostgreSQL pg_dump cron ---
     Write-Host "  Configuring PostgreSQL pg_dump cron (01:45 daily)..." -ForegroundColor White
     $cronCmd = @"
         # Add pg_dump cron job
-        CRON_LINE="45 1 * * * docker exec structura-hindsight /pgdump/pgdump.sh >> /opt/structura/appdata/hindsight/pgdump/cron.log 2>&1"
+        # Cron uruchamia sie w minimalnym srodowisku (bez grupy docker w kontekscie
+        # i z ubogim PATH), wiec 'docker exec' padalby na 'permission denied'.
+        # 'sg docker -c' przelacza grupe; PATH podany jawnie.
+        CRON_LINE="45 1 * * * PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin sg docker -c 'docker exec structura-hindsight /pgdump/pgdump.sh >> /opt/structura/appdata/hindsight/pgdump/cron.log 2>&1'"
         (crontab -l 2>/dev/null | grep -v "pgdump.sh"; echo "`$CRON_LINE") | crontab -
-        echo "pg_dump cron configured"
+        # Weryfikacja: cron wymaga grupy docker, inaczej 'docker exec' padnie po cichu.
+        if crontab -l 2>/dev/null | grep -q "pgdump.sh"; then echo "CRON_OK"; else echo "CRON_MISSING"; fi
+        if id structura 2>/dev/null | grep -q docker; then echo "DOCKER_GRP_OK"; else echo "DOCKER_GRP_MISSING"; fi
 "@
     $cronResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $cronCmd 2>&1
-    Write-Check "PostgreSQL pg_dump cron (01:45 daily)"
+    if ($cronResult -match 'CRON_OK' -and $cronResult -match 'DOCKER_GRP_OK') {
+        Write-Check "pg_dump cron (01:45 daily) zainstalowany i zweryfikowany"
+    } elseif ($cronResult -match 'DOCKER_GRP_MISSING') {
+        Write-Check "cron OK, ale brak grupy docker - pgdump padnie (wymaga re-loginu)" -Warn
+    } else {
+        Write-Check "cron pg_dump NIE zainstalowany" -Warn
+    }
 
     # --- SMB share ---
     Write-Host "  Configuring SMB share (ai-workspace)..." -ForegroundColor White
@@ -1474,13 +1505,30 @@ SMBEOF
         else
             echo "SMB share already configured"
         fi
+        # Haslo SMB z .env (SMB_PASSWORD, wygenerowane losowo przez generate-secrets.sh).
+        # Wczesniej smbpasswd dostawalo haslo 'structura' = takie samo jak konto VM,
+        # do udzialu z dokumentami spraw (slugie i przewidywalne).
+        ENV_FILE="/opt/structura/repos/structura-core/.env"
+        SMB_PW="$(grep -m1 '^SMB_PASSWORD=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
+        if [ -z "$SMB_PW" ]; then
+            echo "SMB_PW_MISSING"
+        else
+            # samba wymaga dodatkowej roli systemowej dla uzytkownika SMB
+            sudo smbpasswd -a structura -s <<< "$SMB_PW"$'\n'"$SMB_PW" 2>/dev/null || true
+            sudo smbpasswd -e structura 2>/dev/null || true
+        fi
+        sudo systemctl enable smbd 2>/dev/null
         sudo systemctl restart smbd 2>/dev/null
+        sleep 2
+        if systemctl is-active --quiet smbd; then echo "SMB_UP"; else echo "SMB_DOWN"; fi
 "@
     $smbResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $smbCmd 2>&1
-    if ($smbResult -match 'configured') {
-        Write-Check "SMB share: \\STRUCTURA\ai-workspace"
+    if ($smbResult -match 'SMB_UP') {
+        Write-Check "SMB share aktywny: \\$VmIp\ai-workspace (haslo: SMB_PASSWORD z .env)"
+    } elseif ($smbResult -match 'SMB_PW_MISSING') {
+        Write-Check "SMB: brak SMB_PASSWORD w .env - uruchom scripts/generate-secrets.sh" -Warn
     } else {
-        Write-Check "SMB setup: $smbResult" -Warn
+        Write-Check "SMB nie wystartowal - sprawdz 'systemctl status smbd'" -Warn
     }
 
     # --- UFW firewall ---
@@ -1494,10 +1542,14 @@ SMBEOF
         sudo ufw allow 443/tcp comment 'HTTPS'
         sudo ufw allow from 192.168.0.0/16 to any port 445 proto tcp comment 'SMB LAN only'
         sudo ufw --force enable
-        echo "UFW configured"
+        if sudo ufw status | grep -q "Status: active"; then echo "UFW_ACTIVE"; else echo "UFW_INACTIVE"; fi
 "@
     $ufwResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $ufwCmd 2>&1
-    Write-Check "UFW: deny incoming, allow 2222/80/443/445(LAN)"
+    if ($ufwResult -match 'UFW_ACTIVE') {
+        Write-Check "UFW aktywny: deny incoming, allow 2222/80/443/445(LAN)"
+    } else {
+        Write-Check "UFW NIE aktywny - sprawdz 'sudo ufw status'" -Warn
+    }
 
     # --- fail2ban ---
     Write-Host "  Installing fail2ban..." -ForegroundColor White
@@ -1515,17 +1567,22 @@ findtime = 600
 F2BEOF
         sudo systemctl enable fail2ban
         sudo systemctl restart fail2ban
-        echo "fail2ban configured"
+        sleep 3
+        if systemctl is-active --quiet fail2ban; then echo "F2B_ACTIVE"; else echo "F2B_INACTIVE"; fi
 "@
     $f2bResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $f2bCmd 2>&1
-    Write-Check "fail2ban: SSH (port 2222, ban 3 fails/1h)"
+    if ($f2bResult -match 'F2B_ACTIVE') {
+        Write-Check "fail2ban aktywny: SSH (port 2222, ban 3 proby/1h)"
+    } else {
+        Write-Check "fail2ban NIE aktywny - sprawdz 'systemctl status fail2ban'" -Warn
+    }
 
     # --- Dashboard theme (Aether Sawaryn) ---
     Write-Host "  Installing dashboard theme (Aether Sawaryn)..." -ForegroundColor White
 
     $themeCmd = @"
         # Copy theme YAML from client repo to Hermes dashboard-themes
-        CLIENT_DIR="/opt/structura/repos/structura-clients/$Client"
+        CLIENT_DIR="/opt/structura/repos/structura-clients-$Client"
         THEME_FILE="`$CLIENT_DIR/dashboard-themes/aether-sawaryn.yaml"
 
         if [ -f "`$THEME_FILE" ]; then
@@ -1709,7 +1766,7 @@ function Show-Summary {
         "  Dashboard:   https://sawaryn.local"
         "  Admin (NPM): ssh -L 81:localhost:81 structura@$VmIp -p 2222"
         "  SMB share:   \\STRUCTURA\ai-workspace"
-        "  Backup:      4 jobs scheduled (Duplicati)"
+        "  Backup:      Duplicati wymaga konfiguracji recznej (patrz wyzej)"
         "  Hindsight:   2 banks initialized"
         ""
         "  Log:         $LOG_FILE"
