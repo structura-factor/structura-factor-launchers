@@ -121,8 +121,8 @@ MediaPath moze byc rowniez sciezka UNC (`\\server\share\STRUCTURA\media\`) lub d
     searxng/                   # SearXNG settings
     telegram/                  # Telegram bot config
   repos/
-    structura-core/            # Docker compose stack
-    structura-clients/sawaryn/ # Konfiguracja kliencka
+    structura-core/                # Docker compose stack
+    structura-clients-sawaryn/     # Konfiguracja kliencka (repo PER KLIENT)
   ai-workspace/                # SMB share (wymiana plikow)
   backups/                     # Duplicati backup destination
 ```

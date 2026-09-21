@@ -1507,14 +1507,18 @@ SMBEOF
         fi
         # Haslo SMB z .env (SMB_PASSWORD, wygenerowane losowo przez generate-secrets.sh).
         # Wczesniej smbpasswd dostawalo haslo 'structura' = takie samo jak konto VM,
-        # do udzialu z dokumentami spraw (slugie i przewidywalne).
+        # do udzialu z dokumentami spraw (slabe i przewidywalne).
+        # UWAGA: to here-string @"..."@ - PowerShell interpoluje $, dlatego KAZDA
+        # zmienna bashowa MUSI byc poprzedzona backtickiem (`$VAR / `$(...)).
+        # Bez tego PS podstawia wlasne (puste) zmienne, a `$(...)` WYKONUJE jako
+        # polecenie PowerShell - haslo SMB nigdy nie trafialo do smbpasswd.
         ENV_FILE="/opt/structura/repos/structura-core/.env"
-        SMB_PW="$(grep -m1 '^SMB_PASSWORD=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
-        if [ -z "$SMB_PW" ]; then
+        SMB_PW="`$(grep -m1 '^SMB_PASSWORD=' "`$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
+        if [ -z "`$SMB_PW" ]; then
             echo "SMB_PW_MISSING"
         else
             # samba wymaga dodatkowej roli systemowej dla uzytkownika SMB
-            sudo smbpasswd -a structura -s <<< "$SMB_PW"$'\n'"$SMB_PW" 2>/dev/null || true
+            sudo smbpasswd -a structura -s <<< "`$SMB_PW"$'\n'"`$SMB_PW" 2>/dev/null || true
             sudo smbpasswd -e structura 2>/dev/null || true
         fi
         sudo systemctl enable smbd 2>/dev/null
