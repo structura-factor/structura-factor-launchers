@@ -1154,6 +1154,22 @@ autoinstall:
     timezone: @@VBOX_INSERT_TIME_ZONE_UX@@
     ntp:
       enabled: true
+    # ====================================================================
+    # SUDO BEZ HASLA - KRYTYCZNE dla automatycznej instalacji.
+    # ====================================================================
+    # Uzytkownik z sekcji "identity" dostaje sudo Z HASLEM. Instalator
+    # wysyla komendy przez SSH (sudo apt-get update, sudo docker ...),
+    # a nikt nie podaje hasla na stdin -> sudo CZEKA na haslo -> komenda
+    # wisi -> "set -e" przerywa -> Docker sie nie instaluje
+    # ("docker: command not found").
+    #
+    # runcmd z cloud-init wykonuje sie PO utworzeniu konta, wiec mozemy
+    # bezpiecznie nadac NOPASSWD (w late-commands konto jeszcze nie istnieje).
+    runcmd:
+      - install -d -m 0755 /etc/sudoers.d
+      - printf '%s\n' "@@VBOX_INSERT_USER_LOGIN@@ ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/010-structura-nopasswd
+      - chmod 0440 /etc/sudoers.d/010-structura-nopasswd
+      - visudo -cf /etc/sudoers.d/010-structura-nopasswd
   late-commands:
     - cp /cdrom/vboxpostinstall.sh /target/root/vboxpostinstall.sh
     - chmod +x /target/root/vboxpostinstall.sh
