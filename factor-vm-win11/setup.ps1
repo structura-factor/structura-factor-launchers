@@ -444,6 +444,49 @@ function Test-Command {
     return $?
 }
 
+# ============================================================================
+# SSH/SCP helpers (bezpieczne dla PowerShell 5.1)
+# ============================================================================
+
+# Uruchamia ssh/scp i ZWRACA wynik jako tekst, nigdy nie rzucajac wyjatkiem.
+#
+# DLACZEGO: przy $ErrorActionPreference='Stop' PowerShell 5.1 zamienia
+# dowolny zapis na stderr polecenia natywnego na RemoteException i przerywa
+# skrypt. ssh wypisuje na stderr rzeczy NIEBEDACE bledami, np.:
+#   Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+# To wywalalo ETAP 4 ("Docker check via SSH failed after 3 attempts") mimo
+# ze polaczenie bylo w porzadku. Ten sam mechanizm zabil wczesniej ssh-keygen.
+function Invoke-Ssh {
+    param(
+        [string[]]$SshArgs,
+        [int]$TimeoutSec = 0
+    )
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & ssh @SshArgs 2>&1
+        return @{ Output = ($out | Out-String).Trim(); ExitCode = $LASTEXITCODE }
+    } catch {
+        return @{ Output = "$_"; ExitCode = 255 }
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+}
+
+function Invoke-Scp {
+    param([string[]]$ScpArgs)
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & scp @ScpArgs 2>&1
+        return @{ Output = ($out | Out-String).Trim(); ExitCode = $LASTEXITCODE }
+    } catch {
+        return @{ Output = "$_"; ExitCode = 255 }
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+}
+
 function Get-VBoxManage {
     $vboxPaths = @(
         "${env:VBOX_INSTALL_PATH}",
@@ -1279,7 +1322,7 @@ function Get-VmIpAndSsh {
     $ErrorActionPreference = 'Continue'
     for ($i = 0; $i -lt 12; $i++) {
         try {
-            $sshTest = ssh -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=10 -o BatchMode=yes -i "$env:USERPROFILE\.ssh\id_ed25519" $sshHost "echo SSH_OK" 2>&1
+            $sshTest = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL","-o","ConnectTimeout=10","-o","BatchMode=yes","-i","$env:USERPROFILE\\.ssh\\id_ed25519",$sshHost,"echo SSH_OK"))).Output
             if ($sshTest -match 'SSH_OK') {
                 $sshStable = $true
                 break
@@ -1316,13 +1359,13 @@ function Invoke-DockerSetup {
     # Guard: check if Docker already installed
     Write-Host "  Checking Docker on VM..." -ForegroundColor White
     $dockerCheck = Invoke-WithRetry -Action {
-        $result = ssh -p $sshPort -o StrictHostKeyChecking=no -o ConnectTimeout=10 $sshTarget "docker --version" 2>$null
-        return $result
+        $r = Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","ConnectTimeout=10","-o","UserKnownHostsFile=NUL",$sshTarget,"docker --version"))
+        return $r.Output
     } -Description "Docker check via SSH" -MaxRetries 3
 
     if ($dockerCheck -match 'Docker version') {
         Write-Check "Docker already installed: $($dockerCheck.Trim())"
-        $composeCheck = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget "docker compose version" 2>$null
+        $composeCheck = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"docker compose version"))).Output
         if ($composeCheck -match 'Docker Compose version') {
             Write-Check "Docker Compose already installed"
             return $true
@@ -1350,8 +1393,8 @@ function Invoke-DockerSetup {
 "@
 
     $installResult = Invoke-WithRetry -Action {
-        $result = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $installCmd 2>&1
-        return $result
+        $r = Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$installCmd))
+        return $r.Output
     } -Description "Docker install via SSH" -MaxRetries 3
 
     if ($PSBoundParameters.ContainsKey("Verbose")) {
@@ -1359,7 +1402,7 @@ function Invoke-DockerSetup {
     }
 
     # Verify
-    $verifyResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget "docker --version && docker compose version" 2>$null
+    $verifyResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"docker --version && docker compose version"))).Output
     if ($verifyResult -match 'Docker version' -and $verifyResult -match 'Docker Compose version') {
         Write-Check "Docker installed and verified"
         Write-Check "Docker Compose installed and verified"
@@ -1387,10 +1430,10 @@ function Invoke-RepoAndAppdata {
     $sshPort = 2222
 
     # Guard: check if repos already cloned
-    $repoCheck = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget "test -d /opt/structura/repos/structura-core && echo EXISTS || echo MISSING" 2>$null
+    $repoCheck = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"test -d /opt/structura/repos/structura-core && echo EXISTS || echo MISSING"))).Output
     if ($repoCheck -match 'EXISTS') {
         Write-Check "Repos already cloned - pulling updates"
-        ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget "cd /opt/structura/repos/structura-core && git pull --ff-only 2>/dev/null; cd /opt/structura/repos/structura-clients-$Client && git pull --ff-only 2>/dev/null" 2>$null
+        $null = Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"cd /opt/structura/repos/structura-core && git pull --ff-only 2>/dev/null; cd /opt/structura/repos/structura-clients-$Client && git pull --ff-only 2>/dev/null"))
     } else {
         # Clone repos
         Write-Host "  Cloning repos to /opt/structura/repos/..." -ForegroundColor White
@@ -1410,12 +1453,12 @@ function Invoke-RepoAndAppdata {
             $sshCfg = ""
 
             if ($haveClientKey) {
-                scp -P $sshPort -o StrictHostKeyChecking=no $DeployKeyPath ${sshTarget}:/tmp/k_client 2>$null
+                $null = Invoke-Scp -ScpArgs (@("-P","$sshPort","-o","StrictHostKeyChecking=no",$DeployKeyPath,"${sshTarget}:/tmp/k_client"))
                 $keySetupCmd += "cp /tmp/k_client ~/.ssh/id_client && chmod 600 ~/.ssh/id_client && rm -f /tmp/k_client`n"
                 $sshCfg += "Host github-client`n    HostName github.com`n    User git`n    IdentityFile ~/.ssh/id_client`n    IdentitiesOnly yes`n    StrictHostKeyChecking no`n"
             }
             if ($haveCoreKey) {
-                scp -P $sshPort -o StrictHostKeyChecking=no $CoreDeployKeyPath ${sshTarget}:/tmp/k_core 2>$null
+                $null = Invoke-Scp -ScpArgs (@("-P","$sshPort","-o","StrictHostKeyChecking=no",$CoreDeployKeyPath,"${sshTarget}:/tmp/k_core"))
                 $keySetupCmd += "cp /tmp/k_core ~/.ssh/id_core && chmod 600 ~/.ssh/id_core && rm -f /tmp/k_core`n"
                 $sshCfg += "Host github-core`n    HostName github.com`n    User git`n    IdentityFile ~/.ssh/id_core`n    IdentitiesOnly yes`n    StrictHostKeyChecking no`n"
             }
@@ -1428,7 +1471,7 @@ function Invoke-RepoAndAppdata {
             if ($haveCoreKey -and -not $haveClientKey) { $keySetupCmd += "cp ~/.ssh/id_core ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519`n" }
             $keySetupCmd += "echo KEY_SETUP_DONE"
 
-            $keySetupResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $keySetupCmd 2>&1
+            $keySetupResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$keySetupCmd))).Output
             if ($keySetupResult -match 'KEY_SETUP_DONE') {
                 Write-Log "Deploy key(s) transferred to VM (client=$haveClientKey core=$haveCoreKey)"
             } else {
@@ -1456,7 +1499,7 @@ function Invoke-RepoAndAppdata {
             echo "CLONE_DONE"
 "@
         $cloneResult = Invoke-WithRetry -Action {
-            return ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $cloneCmd 2>&1
+            return (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$cloneCmd))).Output
         } -Description "Git clone repos" -MaxRetries 3
 
         Write-Check "Repos cloned"
@@ -1482,7 +1525,7 @@ function Invoke-RepoAndAppdata {
         echo "appdata structure created"
 "@
 
-    $mkdirResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $mkdirCmd 2>&1
+    $mkdirResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$mkdirCmd))).Output
     Write-Check "appdata structure created"
 
     # Copy config files from repos to appdata
@@ -1507,7 +1550,7 @@ function Invoke-RepoAndAppdata {
         echo "config files copied"
 "@
 
-    ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $copyCmd 2>&1 | Out-Null
+    $null = Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$copyCmd))
     Write-Check "Config files copied to appdata"
 
     return $true
@@ -1555,7 +1598,7 @@ function Invoke-ContainerDeployment {
         # klient wybiera providera LLM przy pierwszej konfiguracji Hermesa.
         echo "ENV_READY"
 "@
-    $envResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $envCmd 2>&1
+    $envResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$envCmd))).Output
     if ($envResult -match 'ENV_READY') {
         Write-Check ".env utworzony, sekrety lokalne wygenerowane (chmod 600)"
     } else {
@@ -1578,7 +1621,7 @@ function Invoke-ContainerDeployment {
 "@
 
     $deployResult = Invoke-WithRetry -Action {
-        return ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $deployCmd 2>&1
+        return (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$deployCmd))).Output
     } -Description "make deploy" -MaxRetries 3
 
     if ($PSBoundParameters.ContainsKey("Verbose")) {
@@ -1593,7 +1636,7 @@ function Invoke-ContainerDeployment {
 
     # NPM setup
     Write-Host "  Running make npm-setup..." -ForegroundColor White
-    $npmResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget "cd /opt/structura/repos/structura-core && make npm-setup" 2>&1
+    $npmResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"cd /opt/structura/repos/structura-core && make npm-setup"))).Output
     if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $npmResult -ForegroundColor DarkGray }
     Write-Check "NPM configured (make npm-setup)"
 
@@ -1617,14 +1660,14 @@ function Invoke-ContainerDeployment {
     $deadline = (Get-Date).AddSeconds(300)
     while ((Get-Date) -lt $deadline) {
         $allHealthy = $true
-        $healthResults = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget "docker compose -f /opt/structura/repos/structura-core/docker-compose.yaml ps --format json" 2>$null
+        $healthResults = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"docker compose -f /opt/structura/repos/structura-core/docker-compose.yaml ps --format json"))).Output
 
         foreach ($svc in $services.Keys) {
             $info = $services[$svc]
             if ($info.Status -eq 'healthy') { continue }
 
             # Check container health
-            $checkResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget "docker inspect --format='{{.State.Health.Status}}' structura-$svc 2>/dev/null || echo 'notfound'" 2>$null
+            $checkResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"docker inspect --format='{{.State.Health.Status}}' structura-$svc 2>/dev/null || echo 'notfound'"))).Output
             $checkResult = $checkResult.Trim()
 
             if ($checkResult -eq 'healthy') {
@@ -1693,7 +1736,7 @@ function Invoke-HindsightAndConfig {
 "@
 
     $initResult = Invoke-WithRetry -Action {
-        return ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $initCmd 2>&1
+        return (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$initCmd))).Output
     } -Description "init-hindsight" -MaxRetries 3
 
     if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $initResult -ForegroundColor DarkGray }
@@ -1731,7 +1774,7 @@ function Invoke-PostSetup {
         fi
         ls /opt/structura/repos/structura-core/duplicati/pgdump.json 2>/dev/null && echo "JOBS_FILE_OK"
 "@
-    $duplicatiResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $duplicatiCmd 2>&1
+    $duplicatiResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$duplicatiCmd))).Output
     if ($duplicatiResult -match 'DUPLICATI_UP') {
         $manualBackup = $true
         Write-Host "    Duplicati dziala." -ForegroundColor Green
@@ -1756,7 +1799,7 @@ function Invoke-PostSetup {
         if crontab -l 2>/dev/null | grep -q "pgdump.sh"; then echo "CRON_OK"; else echo "CRON_MISSING"; fi
         if id structura 2>/dev/null | grep -q docker; then echo "DOCKER_GRP_OK"; else echo "DOCKER_GRP_MISSING"; fi
 "@
-    $cronResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $cronCmd 2>&1
+    $cronResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$cronCmd))).Output
     if ($cronResult -match 'CRON_OK' -and $cronResult -match 'DOCKER_GRP_OK') {
         Write-Check "pg_dump cron (01:45 daily) zainstalowany i zweryfikowany"
     } elseif ($cronResult -match 'DOCKER_GRP_MISSING') {
@@ -1806,7 +1849,7 @@ SMBEOF
         sleep 2
         if systemctl is-active --quiet smbd; then echo "SMB_UP"; else echo "SMB_DOWN"; fi
 "@
-    $smbResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $smbCmd 2>&1
+    $smbResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$smbCmd))).Output
     if ($smbResult -match 'SMB_UP') {
         Write-Check "SMB share aktywny: \\$VmIp\ai-workspace (haslo: SMB_PASSWORD z .env)"
     } elseif ($smbResult -match 'SMB_PW_MISSING') {
@@ -1828,7 +1871,7 @@ SMBEOF
         sudo ufw --force enable
         if sudo ufw status | grep -q "Status: active"; then echo "UFW_ACTIVE"; else echo "UFW_INACTIVE"; fi
 "@
-    $ufwResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $ufwCmd 2>&1
+    $ufwResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$ufwCmd))).Output
     if ($ufwResult -match 'UFW_ACTIVE') {
         Write-Check "UFW aktywny: deny incoming, allow 2222/80/443/445(LAN)"
     } else {
@@ -1854,7 +1897,7 @@ F2BEOF
         sleep 3
         if systemctl is-active --quiet fail2ban; then echo "F2B_ACTIVE"; else echo "F2B_INACTIVE"; fi
 "@
-    $f2bResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $f2bCmd 2>&1
+    $f2bResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$f2bCmd))).Output
     if ($f2bResult -match 'F2B_ACTIVE') {
         Write-Check "fail2ban aktywny: SSH (port 2222, ban 3 proby/1h)"
     } else {
@@ -1892,7 +1935,7 @@ F2BEOF
         fi
 "@
 
-    $themeResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $themeCmd 2>&1
+    $themeResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$themeCmd))).Output
     if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $themeResult -ForegroundColor DarkGray }
 
     if ($themeResult -match 'THEME_INSTALLED') {
@@ -2018,7 +2061,7 @@ function Invoke-LUKS {
         fi
 "@
 
-    $luksResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $luksCmd 2>&1
+    $luksResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$luksCmd))).Output
     if ($luksResult -match 'LUKS_CONFIGURED' -or $luksResult -match 'already active') {
         Write-Check "LUKS encryption: enabled"
     } else {
