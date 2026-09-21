@@ -1676,7 +1676,14 @@ function Invoke-ContainerDeployment {
             if ($info.Status -eq 'healthy') { continue }
 
             # Check container health
-            $checkResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"docker inspect --format='{{.State.Health.Status}}' structura-$svc 2>/dev/null || echo 'notfound'"))).Output
+            # UWAGA: NIE uzywamy "docker inspect --format='{{...}}'" jako argumentu
+            # ssh - PowerShell 5.1 zdejmuje apostrofy, bash robi brace expansion
+            # na {{...}} i komenda sie rozsypuje -> "notfound" -> wieczne "starting"
+            # (dokladnie ten sam mechanizm, ktory psul instalacje Dockera).
+            # Invoke-SshScript wysyla skrypt PLIKIEM, wiec cytowanie jest bezpieczne.
+            # W podwojnym cudzyslowie PS klamry NIE wymagaja escapowania.
+            $inspectScript = "docker inspect --format='{{.State.Health.Status}}' structura-$svc 2>/dev/null || echo notfound"
+            $checkResult = (Invoke-SshScript -Script $inspectScript -Label "health" -sshTarget $sshTarget -SshPort $sshPort).Output
             $checkResult = $checkResult.Trim()
 
             if ($checkResult -eq 'healthy') {
@@ -1691,8 +1698,19 @@ function Invoke-ContainerDeployment {
         }
 
         if (-not $Quiet) {
-            # Display health table
-            Write-Host -NoNewline ("`r" + ("`n" * ($services.Count + 2)))
+            # Odswiezanie tabeli statusu BEZ rozjezdzania sie linii.
+            # Poprzednio bylo `r + newline*N, co przy kazdym obrocie dopisywalo
+            # kolejny blok i statusy siekle sie jedno pod drugim.
+            # Teraz mierzymy wiersz, na ktorym zaczelismy tabele i wracamy
+            # kursorem na te sama pozycje - tablica jest stabilna w miejscu.
+            if ($script:healthTableTop -eq $null) {
+                $script:healthTableTop = [Console]::CursorTop
+            }
+            try {
+                [Console]::SetCursorPosition(0, $script:healthTableTop)
+            } catch {
+                # Brak konsoli interaktywnej (przekierowanie) - bez pozycjonowania
+            }
             # UWAGA: modulo MUSI byc przed rzutowaniem na [int].
             # (Get-Date).Ticks ~ 6.4e14 przekracza zakres Int32 (2.1e9),
             # wiec "[int](Ticks/...) % Count" rzucalo:
@@ -1704,13 +1722,20 @@ function Invoke-ContainerDeployment {
                 $info = $services[$svc]
                 $svcPadded = $svc.PadRight(12)
                 $frame = $BRAILLE_SPINNER[$spinnerIdx % $BRAILLE_SPINNER.Count]
+                $elapsedStr = Format-Elapsed -Seconds $elapsed
+                # Kazda linia dopelniona do stalej szerokosci - nadpisuje
+                # ewentualne resztki dluzszego tekstu z poprzedniej iteracji.
                 switch ($info.Status) {
-                    'healthy'   { Write-Host "  $svcPadded [v] healthy" -ForegroundColor Green }
-                    'unhealthy' { Write-Host "  $svcPadded [x] unhealthy" -ForegroundColor Red }
-                    'starting'  { Write-Host "  $svcPadded [$frame] starting..." -ForegroundColor Yellow }
-                    default     { Write-Host "  $svcPadded [ ] waiting..." -ForegroundColor DarkGray }
+                    'healthy'   { $line = "  $svcPadded [v] healthy ($elapsedStr)" }
+                    'unhealthy' { $line = "  $svcPadded [x] unhealthy ($elapsedStr)" }
+                    'starting'  { $line = "  $svcPadded [$frame] starting... ($elapsedStr)" }
+                    default     { $line = "  $svcPadded [ ] waiting..." }
                 }
+                Write-Host ($line.PadRight(60))
             }
+            # Dopisz tyle linii, ile ma tabela, zeby kolejne odswiezenie
+            # mialo dokad wrocic kursorem.
+            Write-Host (" " * 60)
         }
 
         if ($allHealthy) { break }
@@ -1718,6 +1743,7 @@ function Invoke-ContainerDeployment {
     }
 
     Write-Host ""
+    $script:healthTableTop = $null
     $healthyCount = ($services.Values | Where-Object { $_.Status -eq 'healthy' }).Count
     $totalCount = $services.Count
     Write-Check "Containers healthy: ${healthyCount}/${totalCount}"
