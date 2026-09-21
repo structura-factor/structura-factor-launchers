@@ -39,6 +39,9 @@ param(
     [string]$MediaPath,
 
     [Parameter(Mandatory = $false)]
+    [switch]$SkipMediaVerify,
+
+    [Parameter(Mandatory = $false)]
     [switch]$Quiet
     # -Verbose provided by CmdletBinding automatically
 )
@@ -535,11 +538,28 @@ function Invoke-MediaSourcing {
                 }
                 $isoExists = $true
             } else {
-                Write-Check "Ubuntu ISO: OneDrive SHA256 mismatch - will download" -Warn
+                Write-Check "Ubuntu ISO: SHA256 nie zgadza sie z versions.txt" -Warn
+                Write-Host "    Plik:     $oneDriveIso" -ForegroundColor Yellow
                 if ($expected) {
-                    Write-Host "    Expected: $expected" -ForegroundColor Yellow
-                    Write-Host "    Got:      $sha" -ForegroundColor Yellow
-                    Write-Host "    Action: Fallback to internet download" -ForegroundColor Yellow
+                    Write-Host "    Oczekiwany: $expected" -ForegroundColor DarkGray
+                    Write-Host "    Znaleziony: $sha" -ForegroundColor DarkGray
+                }
+                Write-Host "    To normalne gdy masz inna (np. starsza) wersje Ubuntu -" -ForegroundColor White
+                Write-Host "    instalator dziala z kazda 24.04.x LTS." -ForegroundColor White
+                Write-Host ""
+                if ($SkipMediaVerify) {
+                    Write-Host "    -SkipMediaVerify: uzywam znalezionego pliku." -ForegroundColor Green
+                    Copy-Item $oneDriveIso $isoPath -Force
+                    $isoExists = $true
+                } else {
+                    $useIt = Read-Host "    Uzyc tego pliku zamiast pobierac 3 GB? (t/n)"
+                    if ($useIt -match '^[tTyY]') {
+                        Copy-Item $oneDriveIso $isoPath -Force
+                        $isoExists = $true
+                        Write-Check "Ubuntu ISO: uzywam pliku uzytkownika"
+                    } else {
+                        Write-Host "    Pobieram oficjalna wersje z internetu..." -ForegroundColor Yellow
+                    }
                 }
             }
         } else {
@@ -606,6 +626,23 @@ function Invoke-MediaSourcing {
                     Copy-Item $oneDriveVbox $vboxPath -Force
                 }
                 $vboxExists = $true
+            } else {
+                # Inna wersja VBox niz w versions.txt to normalne (VirtualBox wydaje
+                # poprawki czesto). Kazda 7.1.x dziala - nie zmuszaj do pobierania.
+                Write-Check "VirtualBox: inna wersja niz w versions.txt" -Warn
+                Write-Host "    Plik: $oneDriveVbox" -ForegroundColor Yellow
+                if ($SkipMediaVerify) {
+                    Write-Host "    -SkipMediaVerify: uzywam znalezionego pliku." -ForegroundColor Green
+                    Copy-Item $oneDriveVbox $vboxPath -Force
+                    $vboxExists = $true
+                } else {
+                    $useIt = Read-Host "    Uzyc tego pliku? (t/n)"
+                    if ($useIt -match '^[tTyY]') {
+                        Copy-Item $oneDriveVbox $vboxPath -Force
+                        $vboxExists = $true
+                        Write-Check "VirtualBox: uzywam pliku uzytkownika"
+                    }
+                }
             }
         }
     }

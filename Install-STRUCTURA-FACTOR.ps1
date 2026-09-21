@@ -262,61 +262,121 @@ if ($vmPower -eq "2") {
 Write-Host ""
 
 # --- Media ---
+# Filmy instalacyjne sa duze (~3.2 GB razem). Przy wdrozeniu u kilku osob
+# w tej samej firmie nie ma sensu pobierac ich za kazdym razem - wystarczy
+# jeden folder zsynchronizowany (OneDrive / SMB / pendrive) i wszyscy go wskaza.
 Write-Host ""
 Write-Host "  === Media instalacyjne ===" -ForegroundColor Cyan
-Write-Host "  Potrzeba: Ubuntu 24.04 ISO (~3.1 GB) + VirtualBox 7.1.16 (~119 MB)" -ForegroundColor White
+Write-Host "  Potrzeba: Ubuntu 24.04 ISO (~3.1 GB) + VirtualBox (~119 MB)" -ForegroundColor White
+Write-Host "  Mozesz wskazac folder z juz pobranymi plikami (OneDrive/SMB/pendrive)," -ForegroundColor DarkGray
+Write-Host "  wtedy instalator je skopiuje zamiast pobierac z internetu." -ForegroundColor DarkGray
 Write-Host ""
 
-$localIso = "$MEDIA_DIR\$UBUNTU_ISO_NAME"
+$localIso  = "$MEDIA_DIR\$UBUNTU_ISO_NAME"
 $localVbox = "$MEDIA_DIR\$VBOX_INSTALLER_NAME"
-$hasLocal = (Test-Path $localIso) -and (Test-Path $localVbox)
-$hasCache = $false
-if ($MediaCachePath -and (Test-Path $MediaCachePath)) {
-    $hasCache = (Test-Path "$MediaCachePath\$UBUNTU_ISO_NAME") -and (Test-Path "$MediaCachePath\$VBOX_INSTALLER_NAME")
+
+# Znajdz plik po wzorcu (klient moze miec inna wersje niz oczekiwana)
+function Find-MediaFile {
+    param([string]$Dir, [string]$Pattern)
+    if (-not $Dir -or -not (Test-Path -LiteralPath $Dir)) { return $null }
+    return Get-ChildItem -LiteralPath $Dir -File -Filter $Pattern -ErrorAction SilentlyContinue |
+           Sort-Object Length -Descending | Select-Object -First 1
 }
 
-if ($hasLocal) {
-    Write-Host "  v Media znalezione lokalnie: $MEDIA_DIR" -ForegroundColor Green
-} elseif ($hasCache) {
-    Write-Host "  v Media znalezione w cache: $MediaCachePath" -ForegroundColor Green
-    Write-Host "  > Kopiowanie do lokalnego folderu..." -ForegroundColor Cyan
-    Copy-Item "$MediaCachePath\$UBUNTU_ISO_NAME" $localIso -Force
-    Copy-Item "$MediaCachePath\$VBOX_INSTALLER_NAME" $localVbox -Force
-    Write-Host "  v Skopiowane" -ForegroundColor Green
-} else {
-    Write-Host "  ! Media nie znalezione - pobieranie z internetu (~15 min)" -ForegroundColor Yellow
-    Write-Host ""
-    if (-not $MediaCachePath) {
-        Write-Host "  Gdzie zapisac pobrane pliki dla kolejnych instalacji?" -ForegroundColor Yellow
-        Write-Host "  Wskaz folder OneDrive/SMB - inni zainstaluja szybciej." -ForegroundColor White
-        Write-Host "  Enter = tylko lokalnie w $MEDIA_DIR" -ForegroundColor DarkGray
-        Write-Host ""
-        $userInput = Read-Host "  Sciezka cache (lub Enter)"
-        if ($userInput -and $userInput.Trim() -ne "") {
-            $MediaCachePath = $userInput.Trim().Trim('"').Trim("'")
-        }
-    }
-    if ($MediaCachePath) {
-        if (-not (Test-Path $MediaCachePath)) {
-            New-Item -ItemType Directory -Path $MediaCachePath -Force | Out-Null
-        }
-        Write-Host "  v Cache: $MediaCachePath" -ForegroundColor Green
-        # Re-check: does media exist in the cache path the user just entered?
-        $cacheIso = "$MediaCachePath\$UBUNTU_ISO_NAME"
-        $cacheVbox = "$MediaCachePath\$VBOX_INSTALLER_NAME"
-        if ((Test-Path $cacheIso) -and (Test-Path $cacheVbox)) {
-            Write-Host "  v Media znalezione w cache - kopiowanie do folderu lokalnego..." -ForegroundColor Green
-            Copy-Item $cacheIso $localIso -Force
-            Copy-Item $cacheVbox $localVbox -Force
-            Write-Host "  v Skopiowane" -ForegroundColor Green
-            $hasLocal = $true
-        }
-    } else {
-        Write-Host "  Tylko lokalnie: $MEDIA_DIR" -ForegroundColor DarkGray
-    }
+$isoSrc  = $null
+$vboxSrc = $null
+
+# 1) lokalny C:\STRUCTURA\media (z poprzedniej instalacji)
+if (-not $isoSrc)  { $isoSrc  = Find-MediaFile -Dir $MEDIA_DIR -Pattern 'ubuntu-*.iso' }
+if (-not $vboxSrc) { $vboxSrc = Find-MediaFile -Dir $MEDIA_DIR -Pattern 'VirtualBox-*.exe' }
+
+# 2) -MediaCachePath z parametru
+if ($MediaCachePath) {
+    if (-not $isoSrc)  { $isoSrc  = Find-MediaFile -Dir $MediaCachePath -Pattern 'ubuntu-*.iso' }
+    if (-not $vboxSrc) { $vboxSrc = Find-MediaFile -Dir $MediaCachePath -Pattern 'VirtualBox-*.exe' }
 }
-W-Log "MediaCache=$MediaCachePath Local=$hasLocal Cache=$hasCache"
+
+# 3) ZAPYTAJ uzytkownika (zawsze gdy brakuje choc jednego pliku)
+if (-not $isoSrc -or -not $vboxSrc) {
+    Write-Host "  Media nie znalezione lokalnie." -ForegroundColor Yellow
+    if ($isoSrc)  { Write-Host "    (ISO juz jest: $($isoSrc.Name))" -ForegroundColor DarkGray }
+    if ($vboxSrc) { Write-Host "    (VirtualBox juz jest: $($vboxSrc.Name))" -ForegroundColor DarkGray }
+    Write-Host ""
+    Write-Host "  Masz folder z pobranymi plikami? Podaj sciezke." -ForegroundColor White
+    Write-Host "  (np. C:\Users\ktos\OneDrive\STRUCTURA\media albo \\serwer\udzial\media)" -ForegroundColor DarkGray
+    Write-Host "  Enter = pomin i pobierz z internetu" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $tries = 0
+    while ((-not $isoSrc -or -not $vboxSrc) -and $tries -lt 3) {
+        $userInput = Read-Host "  Folder z mediami (lub Enter)"
+        if (-not $userInput -or $userInput.Trim() -eq "") { break }
+        $cand = $userInput.Trim().Trim('"').Trim("'")
+        $tries++
+
+        if (-not (Test-Path -LiteralPath $cand)) {
+            Write-Host "    x Folder nie istnieje: $cand" -ForegroundColor Red
+            continue
+        }
+
+        $isoFound  = Find-MediaFile -Dir $cand -Pattern 'ubuntu-*.iso'
+        $vboxFound = Find-MediaFile -Dir $cand -Pattern 'VirtualBox-*.exe'
+
+        if ($isoFound)  { $isoSrc  = $isoFound;  Write-Host "    v ISO: $($isoFound.Name)" -ForegroundColor Green }
+        else            { Write-Host "    ! Brak pliku ubuntu-*.iso w tym folderze" -ForegroundColor Yellow }
+        if ($vboxFound) { $vboxSrc = $vboxFound; Write-Host "    v VirtualBox: $($vboxFound.Name)" -ForegroundColor Green }
+        else            { Write-Host "    ! Brak pliku VirtualBox-*.exe w tym folderze" -ForegroundColor Yellow }
+
+        if ((-not $isoSrc -or -not $vboxSrc) -and $tries -lt 3) {
+            Write-Host "    Sprobuj inny folder (Enter aby pominac)." -ForegroundColor DarkGray
+        }
+    }
+    Write-Host ""
+}
+
+# Skopiuj znalezione pliki pod nazwy, ktorych oczekuje setup.ps1.
+# UWAGA: nazwa pliku ma znaczenie - setup.ps1 szuka DOKLADNIE
+# $UBUNTU_ISO_NAME / $VBOX_INSTALLER_NAME, dlatego kopiujemy (nie linkujemy).
+if ($isoSrc) {
+    if ($isoSrc.FullName -ne $localIso) {
+        Write-Host "  > Kopiowanie ISO ($([math]::Round($isoSrc.Length/1GB,2)) GB)..." -ForegroundColor Cyan
+        Copy-Item $isoSrc.FullName $localIso -Force
+    }
+    Write-Host "  v ISO gotowe: $UBUNTU_ISO_NAME" -ForegroundColor Green
+}
+if ($vboxSrc) {
+    if ($vboxSrc.FullName -ne $localVbox) {
+        Write-Host "  > Kopiowanie VirtualBox..." -ForegroundColor Cyan
+        Copy-Item $vboxSrc.FullName $localVbox -Force
+    }
+    Write-Host "  v VirtualBox gotowy: $VBOX_INSTALLER_NAME" -ForegroundColor Green
+}
+
+# Jesli uzytkownik wskazal folder z WLASNYMI plikami, nie ma sensu wymagac
+# zgodnosci SHA256 z versions.txt - jego wersja Ubuntu/VBox jest w porzadku.
+if ($isoSrc -or $vboxSrc) { $SkipMediaVerify = $true }
+
+$mediaCacheOut = $null   # folder, do ktorego zapiszemy pobrane pliki (jesli trzeba pobierac)
+if (-not $isoSrc -or -not $vboxSrc) {
+    Write-Host "  ! Brakujace pliki zostana pobrane z internetu (~15 min)." -ForegroundColor Yellow
+    if ($MediaCachePath) {
+        $mediaCacheOut = $MediaCachePath
+        if (-not (Test-Path $MediaCachePath)) { New-Item -ItemType Directory -Path $MediaCachePath -Force | Out-Null }
+    } else {
+        $cacheAnswer = Read-Host "  Zapisac pobrane pliki do wspoldzielonego folderu? (sciezka lub Enter)"
+        if ($cacheAnswer -and $cacheAnswer.Trim() -ne "") {
+            $mediaCacheOut = $cacheAnswer.Trim().Trim('"').Trim("'")
+            if (-not (Test-Path $mediaCacheOut)) { New-Item -ItemType Directory -Path $mediaCacheOut -Force | Out-Null }
+        }
+    }
+    if ($mediaCacheOut) { Write-Host "  v Cache dla pobranych: $mediaCacheOut" -ForegroundColor Green }
+}
+
+$MediaCachePath = $mediaCacheOut
+$hasLocal = (Test-Path $localIso) -and (Test-Path $localVbox)
+W-Log "Media: iso=$($isoSrc.FullName) vbox=$($vboxSrc.FullName) local=$hasLocal"
 Write-Host ""
+
 
 # --- Pobieranie bootstrap.ps1 ---
 Write-Host "  > Pobieranie bootstrap.ps1 z GitHub..." -ForegroundColor Cyan
@@ -349,6 +409,7 @@ Write-Host ""
 
 $ba = @("-Client", $CLIENT, "-DeployKeyPath", "'$deployKeyPath'", "-MediaPath", "'$MEDIA_DIR'", "-InstallPath", "'$BASE_DIR'")
 if ($coreDeployKeyPath) { $ba += @("-CoreDeployKeyPath", "'$coreDeployKeyPath'") }
+if ($SkipMediaVerify) { $ba += "-SkipMediaVerify" }
 if ($VM_RAM -ne 4096) { $ba += @("-VM_RAM", $VM_RAM) }
 if ($VM_CPU -ne 2) { $ba += @("-VM_CPU", $VM_CPU) }
 if ($VM_DISK -ne 40960) { $ba += @("-VM_DISK", $VM_DISK) }

@@ -23,6 +23,9 @@ param(
     [string]$MediaPath,
 
     [Parameter(Mandatory = $false)]
+    [switch]$SkipMediaVerify,
+
+    [Parameter(Mandatory = $false)]
     [string]$LauncherRepo = "structura-factor/structura-factor-launchers@c231b770536dfc8d24342ca669da499688705424",
 
     [Parameter(Mandatory = $false)]
@@ -319,6 +322,7 @@ $setupArgs = @("-Client", $Client)
 if ($DeployKeyPath) { $setupArgs += @("-DeployKeyPath", $DeployKeyPath) }
 if ($CoreDeployKeyPath) { $setupArgs += @("-CoreDeployKeyPath", $CoreDeployKeyPath) }
 if ($MediaPath) { $setupArgs += @("-MediaPath", $MediaPath) }
+if ($SkipMediaVerify) { $setupArgs += "-SkipMediaVerify" }
 if ($VM_RAM) { $setupArgs += @("-VM_RAM", $VM_RAM) }
 if ($VM_CPU) { $setupArgs += @("-VM_CPU", $VM_CPU) }
 if ($VM_DISK) { $setupArgs += @("-VM_DISK", $VM_DISK) }
