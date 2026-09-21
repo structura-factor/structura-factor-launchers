@@ -1693,7 +1693,13 @@ function Invoke-ContainerDeployment {
         if (-not $Quiet) {
             # Display health table
             Write-Host -NoNewline ("`r" + ("`n" * ($services.Count + 2)))
-            $spinnerIdx = [int]((Get-Date).Ticks / 10000000) % $BRAILLE_SPINNER.Count
+            # UWAGA: modulo MUSI byc przed rzutowaniem na [int].
+            # (Get-Date).Ticks ~ 6.4e14 przekracza zakres Int32 (2.1e9),
+            # wiec "[int](Ticks/...) % Count" rzucalo:
+            #   Cannot convert value "63925606501,6067" to type "System.Int32"
+            # i przerywalo instalacje tuz po starcie kontenerow.
+            # Dzielenie 10000000 + modulo najpierw, rzutowanie na koncu.
+            $spinnerIdx = [int]((((Get-Date).Ticks / 10000000) % $BRAILLE_SPINNER.Count))
             foreach ($svc in $services.Keys) {
                 $info = $services[$svc]
                 $svcPadded = $svc.PadRight(12)
