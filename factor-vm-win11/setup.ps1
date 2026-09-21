@@ -461,13 +461,24 @@ function Invoke-Ssh {
         [string[]]$SshArgs,
         [int]$TimeoutSec = 0
     )
+    # -o LogLevel=ERROR tlumi "Warning: Permanently added ... to the list of
+    # known hosts" U ZRODLA. Bez tego warning leci na stderr, a PowerShell 5.1
+    # opakowuje go w NativeCommandError i (mimo try/catch) wciska do wyniku,
+    # przez co weryfikacje typu "$out -match 'Docker version'" nie dzialaja.
+    $argsWithLog = @('-o', 'LogLevel=ERROR') + $SshArgs
+
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $out = & ssh @SshArgs 2>&1
-        return @{ Output = ($out | Out-String).Trim(); ExitCode = $LASTEXITCODE }
+        $out = & ssh @argsWithLog 2>&1
+        $rc = $LASTEXITCODE
+        # Odfiltruj resztki NativeCommandError / warningow z tekstu wyniku
+        $clean = @($out | Where-Object {
+            $_.ToString() -notmatch '^(ssh\.exe|scp\.exe)\s*:'
+        } | ForEach-Object { $_.ToString() })
+        return @{ Output = (($clean | Out-String).Trim()); ExitCode = $rc; Raw = ($out | Out-String).Trim() }
     } catch {
-        return @{ Output = "$_"; ExitCode = 255 }
+        return @{ Output = ''; ExitCode = 255; Raw = "$_" }
     } finally {
         $ErrorActionPreference = $prevEAP
     }
@@ -478,12 +489,51 @@ function Invoke-Scp {
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $out = & scp @ScpArgs 2>&1
+        $out = & scp @(@('-o', 'LogLevel=ERROR') + $ScpArgs) 2>&1
         return @{ Output = ($out | Out-String).Trim(); ExitCode = $LASTEXITCODE }
     } catch {
         return @{ Output = "$_"; ExitCode = 255 }
     } finally {
         $ErrorActionPreference = $prevEAP
+    }
+}
+
+# Uruchamia WIELOLINIJKOWY skrypt bash na VM bez problemow z cytowaniem.
+#
+# DLACZEGO NIE przekazywac skryptu jako argumentu do ssh:
+#   PowerShell 5.1 przy wywolaniu polecenia natywnego ZDEJMUJE cudzyslowy
+#   z argumentow. Wielolinijkowy skrypt typu
+#       echo "deb [arch=$(dpkg --print-architecture)] ..." | sudo tee ...
+#   dociera do bash w gosciu bez cudzyslowow i SIE ROZSYPIJE. Skutek:
+#   instalacja Dockera konczyla sie "docker: command not found".
+#
+# ROZWIAZANIE: zapisz skrypt do pliku (LF), scp na VM, uruchom przez bash.
+# Zero argumentow ze znakami specjalnymi - nic nie moze sie zepsuc.
+function Invoke-SshScript {
+    param(
+        [string]$Script,
+        [string]$Label = 'script',
+        [string]$sshTarget = "structura@$sshHost",
+        [int]$SshPort = 2222,
+        [string]$RemotePath
+    )
+    if (-not $RemotePath) { $RemotePath = "/tmp/structura-$Label.sh" }
+
+    $localPath = Join-Path $env:TEMP ("structura-$Label-{0}.sh" -f ([guid]::NewGuid().ToString('N')))
+    try {
+        # LF wymuszone - skrypt z CRLF lamie sie na shebang
+        $text = ($Script -replace "`r`n", "`n")
+        [System.IO.File]::WriteAllText($localPath, $text, [System.Text.UTF8Encoding]::new($false))
+
+        $cp = Invoke-Scp -ScpArgs (@("-P", "$SshPort", "-o", "StrictHostKeyChecking=no", $localPath, "${sshTarget}:$RemotePath"))
+        if ($cp.ExitCode -ne 0) {
+            return @{ Output = "scp nie powiodl sie: $($cp.Output)"; ExitCode = $cp.ExitCode }
+        }
+
+        $r = Invoke-Ssh -SshArgs (@("-p", "$SshPort", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=NUL", $sshTarget, "sudo bash $RemotePath 2>&1 || bash $RemotePath"))
+        return @{ Output = $r.Output; ExitCode = $r.ExitCode }
+    } finally {
+        Remove-Item -LiteralPath $localPath -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -1393,7 +1443,7 @@ function Invoke-DockerSetup {
 "@
 
     $installResult = Invoke-WithRetry -Action {
-        $r = Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$installCmd))
+        $r = Invoke-SshScript -Script $installCmd -Label "docker-install" -sshTarget $sshTarget -SshPort $sshPort
         return $r.Output
     } -Description "Docker install via SSH" -MaxRetries 3
 
@@ -1471,7 +1521,7 @@ function Invoke-RepoAndAppdata {
             if ($haveCoreKey -and -not $haveClientKey) { $keySetupCmd += "cp ~/.ssh/id_core ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519`n" }
             $keySetupCmd += "echo KEY_SETUP_DONE"
 
-            $keySetupResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$keySetupCmd))).Output
+            $keySetupResult = (Invoke-SshScript -Script $keySetupCmd -Label "keys" -sshTarget $sshTarget -SshPort $sshPort).Output
             if ($keySetupResult -match 'KEY_SETUP_DONE') {
                 Write-Log "Deploy key(s) transferred to VM (client=$haveClientKey core=$haveCoreKey)"
             } else {
@@ -1499,7 +1549,7 @@ function Invoke-RepoAndAppdata {
             echo "CLONE_DONE"
 "@
         $cloneResult = Invoke-WithRetry -Action {
-            return (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$cloneCmd))).Output
+            return (Invoke-SshScript -Script $cloneCmd -Label "clone" -sshTarget $sshTarget -SshPort $sshPort).Output
         } -Description "Git clone repos" -MaxRetries 3
 
         Write-Check "Repos cloned"
@@ -1525,7 +1575,7 @@ function Invoke-RepoAndAppdata {
         echo "appdata structure created"
 "@
 
-    $mkdirResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$mkdirCmd))).Output
+    $mkdirResult = (Invoke-SshScript -Script $mkdirCmd -Label "mkdir" -sshTarget $sshTarget -SshPort $sshPort).Output
     Write-Check "appdata structure created"
 
     # Copy config files from repos to appdata
@@ -1550,7 +1600,7 @@ function Invoke-RepoAndAppdata {
         echo "config files copied"
 "@
 
-    $null = Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$copyCmd))
+    $null = Invoke-SshScript -Script $copyCmd -Label "copycfg" -sshTarget $sshTarget -SshPort $sshPort
     Write-Check "Config files copied to appdata"
 
     return $true
@@ -1598,7 +1648,7 @@ function Invoke-ContainerDeployment {
         # klient wybiera providera LLM przy pierwszej konfiguracji Hermesa.
         echo "ENV_READY"
 "@
-    $envResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$envCmd))).Output
+    $envResult = (Invoke-SshScript -Script $envCmd -Label "env" -sshTarget $sshTarget -SshPort $sshPort).Output
     if ($envResult -match 'ENV_READY') {
         Write-Check ".env utworzony, sekrety lokalne wygenerowane (chmod 600)"
     } else {
@@ -1621,7 +1671,7 @@ function Invoke-ContainerDeployment {
 "@
 
     $deployResult = Invoke-WithRetry -Action {
-        return (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$deployCmd))).Output
+        return (Invoke-SshScript -Script $deployCmd -Label "deploy" -sshTarget $sshTarget -SshPort $sshPort).Output
     } -Description "make deploy" -MaxRetries 3
 
     if ($PSBoundParameters.ContainsKey("Verbose")) {
@@ -1736,7 +1786,7 @@ function Invoke-HindsightAndConfig {
 "@
 
     $initResult = Invoke-WithRetry -Action {
-        return (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$initCmd))).Output
+        return (Invoke-SshScript -Script $initCmd -Label "hindsight" -sshTarget $sshTarget -SshPort $sshPort).Output
     } -Description "init-hindsight" -MaxRetries 3
 
     if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $initResult -ForegroundColor DarkGray }
@@ -1774,7 +1824,7 @@ function Invoke-PostSetup {
         fi
         ls /opt/structura/repos/structura-core/duplicati/pgdump.json 2>/dev/null && echo "JOBS_FILE_OK"
 "@
-    $duplicatiResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$duplicatiCmd))).Output
+    $duplicatiResult = (Invoke-SshScript -Script $duplicatiCmd -Label "duplicati" -sshTarget $sshTarget -SshPort $sshPort).Output
     if ($duplicatiResult -match 'DUPLICATI_UP') {
         $manualBackup = $true
         Write-Host "    Duplicati dziala." -ForegroundColor Green
@@ -1799,7 +1849,7 @@ function Invoke-PostSetup {
         if crontab -l 2>/dev/null | grep -q "pgdump.sh"; then echo "CRON_OK"; else echo "CRON_MISSING"; fi
         if id structura 2>/dev/null | grep -q docker; then echo "DOCKER_GRP_OK"; else echo "DOCKER_GRP_MISSING"; fi
 "@
-    $cronResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$cronCmd))).Output
+    $cronResult = (Invoke-SshScript -Script $cronCmd -Label "cron" -sshTarget $sshTarget -SshPort $sshPort).Output
     if ($cronResult -match 'CRON_OK' -and $cronResult -match 'DOCKER_GRP_OK') {
         Write-Check "pg_dump cron (01:45 daily) zainstalowany i zweryfikowany"
     } elseif ($cronResult -match 'DOCKER_GRP_MISSING') {
@@ -1849,7 +1899,7 @@ SMBEOF
         sleep 2
         if systemctl is-active --quiet smbd; then echo "SMB_UP"; else echo "SMB_DOWN"; fi
 "@
-    $smbResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$smbCmd))).Output
+    $smbResult = (Invoke-SshScript -Script $smbCmd -Label "smb" -sshTarget $sshTarget -SshPort $sshPort).Output
     if ($smbResult -match 'SMB_UP') {
         Write-Check "SMB share aktywny: \\$VmIp\ai-workspace (haslo: SMB_PASSWORD z .env)"
     } elseif ($smbResult -match 'SMB_PW_MISSING') {
@@ -1871,7 +1921,7 @@ SMBEOF
         sudo ufw --force enable
         if sudo ufw status | grep -q "Status: active"; then echo "UFW_ACTIVE"; else echo "UFW_INACTIVE"; fi
 "@
-    $ufwResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$ufwCmd))).Output
+    $ufwResult = (Invoke-SshScript -Script $ufwCmd -Label "ufw" -sshTarget $sshTarget -SshPort $sshPort).Output
     if ($ufwResult -match 'UFW_ACTIVE') {
         Write-Check "UFW aktywny: deny incoming, allow 2222/80/443/445(LAN)"
     } else {
@@ -1897,7 +1947,7 @@ F2BEOF
         sleep 3
         if systemctl is-active --quiet fail2ban; then echo "F2B_ACTIVE"; else echo "F2B_INACTIVE"; fi
 "@
-    $f2bResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$f2bCmd))).Output
+    $f2bResult = (Invoke-SshScript -Script $f2bCmd -Label "fail2ban" -sshTarget $sshTarget -SshPort $sshPort).Output
     if ($f2bResult -match 'F2B_ACTIVE') {
         Write-Check "fail2ban aktywny: SSH (port 2222, ban 3 proby/1h)"
     } else {
@@ -1935,7 +1985,7 @@ F2BEOF
         fi
 "@
 
-    $themeResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$themeCmd))).Output
+    $themeResult = (Invoke-SshScript -Script $themeCmd -Label "theme" -sshTarget $sshTarget -SshPort $sshPort).Output
     if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $themeResult -ForegroundColor DarkGray }
 
     if ($themeResult -match 'THEME_INSTALLED') {
@@ -2061,7 +2111,7 @@ function Invoke-LUKS {
         fi
 "@
 
-    $luksResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,$luksCmd))).Output
+    $luksResult = (Invoke-SshScript -Script $luksCmd -Label "luks" -sshTarget $sshTarget -SshPort $sshPort).Output
     if ($luksResult -match 'LUKS_CONFIGURED' -or $luksResult -match 'already active') {
         Write-Check "LUKS encryption: enabled"
     } else {
