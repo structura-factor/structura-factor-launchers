@@ -968,22 +968,45 @@ function Get-VmIpAndSsh {
     $sshHost = "127.0.0.1"
     $sshPort = 2222
 
-    # Wait for Ubuntu to finish installing (fixed 10 min, with progress display)
-    Write-Host "  Waiting for Ubuntu to install (10 min)..." -ForegroundColor White
+    # Wait for a REAL SSH handshake. A plain TCP check on 2222 is a false positive:
+    # NAT port forwarding accepts the connection on the host before sshd exists.
+    Write-Host "  Czekam na koniec instalacji Ubuntu (realny handshake SSH)..." -ForegroundColor White
     Write-Host "  (Ubuntu installation takes 5-15 minutes, please be patient)" -ForegroundColor DarkGray
     Write-Host ""
 
-    $waitMin = 10
-    for ($i = 0; $i -lt $waitMin; $i++) {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $ubuntuUp = $false
+    $probeKey = "$env:USERPROFILE\.ssh\id_ed25519"
+    for ($i = 0; $i -lt 60; $i++) {
+        $probe = ssh -v -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=8 -o BatchMode=yes -i $probeKey $sshHost "echo SSH_OK" 2>&1
+        if ($probe -match 'SSH_OK') {
+            $ErrorActionPreference = $prevEAP
+            Write-Host ""
+            Write-Check "SSH gotowe (klucz dziala) - ${sshHost}:${sshPort}"
+            return @{ VmExists = $true; VmIp = $sshHost }
+        }
+        if ($probe -match 'Permission denied') {
+            $ubuntuUp = $true
+            Write-Host ""
+            Write-Check "Ubuntu zainstalowane (sshd odpowiada, brak klucza)"
+            break
+        }
+        $min = [math]::Floor($i * 30 / 60)
         $vmState = (& $Vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState=')
         $stateStr = if ($vmState) { $vmState -replace 'VMState=|"','' } else { 'unknown' }
-        Write-Host "  [$($i+1)min] VM: $stateStr - czekam na koniec instalacji..." -ForegroundColor DarkGray
-        Start-Sleep -Seconds 60
+        Write-Host "  [${min}min] VM: $stateStr - instalacja w toku..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds 30
+    }
+    $ErrorActionPreference = $prevEAP
+
+    if (-not $ubuntuUp) {
+        Write-Check "Ubuntu nie odpowiedzialo po 30 min - sprawdz VM" -Warn
+        return @{ VmExists = $true; VmIp = $null }
     }
 
     Write-Host ""
     Write-Host "  Installing SSH key via VM console..." -ForegroundColor White
-
     # Get public key
     $pubKey = ""
     if ($DeployKeyPath -and (Test-Path $DeployKeyPath)) {
