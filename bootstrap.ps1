@@ -26,7 +26,7 @@ param(
     [switch]$SkipMediaVerify,
 
     [Parameter(Mandatory = $false)]
-    [string]$LauncherRepo = "structura-factor/structura-factor-launchers@1c5c3c294d8310033c7fb284b82dbc46f8e78d35",
+    [string]$LauncherRepo = "structura-factor/structura-factor-launchers@d8e29f174cfc97efe9ac5e4c9103b18fa8c598a6",
 
     [Parameter(Mandatory = $false)]
     [string]$ClientRepo = "structura-factor/structura-clients-sawaryn",
