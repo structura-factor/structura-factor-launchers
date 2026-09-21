@@ -18,6 +18,9 @@ param(
     [string]$DeployKeyPath,
 
     [Parameter(Mandatory = $false)]
+    [string]$CoreDeployKeyPath,
+
+    [Parameter(Mandatory = $false)]
     [int]$VM_RAM = 4096,
 
     [Parameter(Mandatory = $false)]
@@ -1147,21 +1150,53 @@ function Invoke-RepoAndAppdata {
         # Clone repos
         Write-Host "  Cloning repos to /opt/structura/repos/..." -ForegroundColor White
 
-        # Transfer deploy key to VM for git clone authentication
-        if ($DeployKeyPath -and (Test-Path $DeployKeyPath)) {
-            Write-Host "  Transferring deploy key to VM..." -ForegroundColor DarkGray
-            $vmKeyPath = "/tmp/structura_deploy_key"
-            scp -P $sshPort -o StrictHostKeyChecking=no $DeployKeyPath ${sshTarget}:$vmKeyPath 2>$null
-            $keySetupCmd = @"
-                mkdir -p ~/.ssh
-                cp $vmKeyPath ~/.ssh/id_ed25519
-                chmod 600 ~/.ssh/id_ed25519
-                rm -f $vmKeyPath
-                ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-                echo "KEY_SETUP_DONE"
-"@
+        # Transfer deploy key(s) to VM for git clone authentication.
+        # UWAGA: GitHub NIE pozwala uzyc tego samego deploy keya w dwoch repo
+        # ("key is already in use"), wiec core i client maja OSOBNE klucze.
+        # Dlatego na VM konfigurujemy aliasy SSH (github-core / github-client),
+        # a URL-e klonowania uzywaja tych aliasow zamiast github.com.
+        $haveClientKey = $DeployKeyPath -and (Test-Path $DeployKeyPath)
+        $haveCoreKey = $CoreDeployKeyPath -and (Test-Path $CoreDeployKeyPath)
+
+        if ($haveClientKey -or $haveCoreKey) {
+            Write-Host "  Transferring deploy key(s) to VM..." -ForegroundColor DarkGray
+            $keySetupCmd = "mkdir -p ~/.ssh && chmod 700 ~/.ssh`n"
+            $keySetupCmd += "ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true`n"
+            $sshCfg = ""
+
+            if ($haveClientKey) {
+                scp -P $sshPort -o StrictHostKeyChecking=no $DeployKeyPath ${sshTarget}:/tmp/k_client 2>$null
+                $keySetupCmd += "cp /tmp/k_client ~/.ssh/id_client && chmod 600 ~/.ssh/id_client && rm -f /tmp/k_client`n"
+                $sshCfg += "Host github-client`n    HostName github.com`n    User git`n    IdentityFile ~/.ssh/id_client`n    IdentitiesOnly yes`n    StrictHostKeyChecking no`n"
+            }
+            if ($haveCoreKey) {
+                scp -P $sshPort -o StrictHostKeyChecking=no $CoreDeployKeyPath ${sshTarget}:/tmp/k_core 2>$null
+                $keySetupCmd += "cp /tmp/k_core ~/.ssh/id_core && chmod 600 ~/.ssh/id_core && rm -f /tmp/k_core`n"
+                $sshCfg += "Host github-core`n    HostName github.com`n    User git`n    IdentityFile ~/.ssh/id_core`n    IdentitiesOnly yes`n    StrictHostKeyChecking no`n"
+            }
+
+            # Nadpisz ~/.ssh/config - powtarzalne, bez duplikatow przy re-runie
+            $cfgLines = ($sshCfg -split "`n" | ForEach-Object { "echo '$_' >> ~/.ssh/config" }) -join " && "
+            $keySetupCmd += "rm -f ~/.ssh/config && $cfgLines`n"
+            # Fallback: jesli podano tylko jeden klucz, ustaw go tez jako domyslny
+            if ($haveClientKey -and -not $haveCoreKey) { $keySetupCmd += "cp ~/.ssh/id_client ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519`n" }
+            if ($haveCoreKey -and -not $haveClientKey) { $keySetupCmd += "cp ~/.ssh/id_core ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519`n" }
+            $keySetupCmd += "echo KEY_SETUP_DONE"
+
             $keySetupResult = ssh -p $sshPort -o StrictHostKeyChecking=no $sshTarget $keySetupCmd 2>&1
-            Write-Log "Deploy key transferred to VM"
+            if ($keySetupResult -match 'KEY_SETUP_DONE') {
+                Write-Log "Deploy key(s) transferred to VM (client=$haveClientKey core=$haveCoreKey)"
+            } else {
+                Write-Check "Deploy key transfer: sprawdz log" -Warn
+            }
+        }
+
+        # Host w URL zalezy od tego, ktore klucze mamy (aliasy github-core / github-client)
+        $coreUrl = $CORE_REPO_URL
+        $clientUrl = $CLIENT_REPO_URL
+        if ($haveCoreKey -and $haveClientKey) {
+            $coreUrl   = $CORE_REPO_URL   -replace 'github\.com:', 'github-core:'
+            $clientUrl = $CLIENT_REPO_URL -replace 'github\.com:', 'github-client:'
         }
 
         $cloneCmd = @"
@@ -1171,8 +1206,8 @@ function Invoke-RepoAndAppdata {
             sudo mkdir -p /opt/structura/repos
             sudo chown -R structura:structura /opt/structura
             cd /opt/structura/repos
-            git clone --depth 1 $CORE_REPO_URL structura-core
-            git clone --depth 1 $CLIENT_REPO_URL structura-clients-$Client
+            git clone --depth 1 $coreUrl structura-core
+            git clone --depth 1 $clientUrl structura-clients-$Client
             echo "CLONE_DONE"
 "@
         $cloneResult = Invoke-WithRetry -Action {

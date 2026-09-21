@@ -101,9 +101,23 @@ $deployKeyPath = $null
 $keyFiles = Get-ChildItem -Path $KEYS_DIR -File -ErrorAction SilentlyContinue | Where-Object {
     $_.Name -notmatch '\.pub$' -and $_.Name -notmatch '\.txt$' -and $_.Name -notmatch '\.md$'
 }
+# GitHub nie pozwala uzyc jednego deploy keya w dwoch repo, wiec instalka
+# potrzebuje DWOCH kluczy: klienta (structura-clients-<client>) i core.
+# Rozpoznajemy je po nazwie pliku; reszta idzie jako klucz klienta.
+$coreDeployKeyPath = $null
 if ($keyFiles) {
-    $deployKeyPath = $keyFiles[0].FullName
-    Write-Host "  v Znaleziono klucz w folderze: klucze\$($keyFiles[0].Name)" -ForegroundColor Green
+    $coreFile = $keyFiles | Where-Object { $_.Name -match 'core' } | Select-Object -First 1
+    $clientFile = $keyFiles | Where-Object { $_.Name -notmatch 'core' } | Select-Object -First 1
+    if ($coreFile) {
+        $coreDeployKeyPath = $coreFile.FullName
+        Write-Host "  v Klucz core: klucze\$($coreFile.Name)" -ForegroundColor Green
+    }
+    $deployKeyPath = if ($clientFile) { $clientFile.FullName } else { $keyFiles[0].FullName }
+    Write-Host "  v Klucz klienta: klucze\$(Split-Path $deployKeyPath -Leaf)" -ForegroundColor Green
+    if (-not $coreFile) {
+        Write-Host "  ! Brak klucza 'core' w $KEYS_DIR - klon structura-core padnie." -ForegroundColor Yellow
+        Write-Host "    Skopiuj deploy_key_core (deploy key z repo structura-core)." -ForegroundColor Yellow
+    }
 } else {
     $keyChoice = Read-Host "  Wybierz opcje (1/2/3)"
     switch ($keyChoice) {
@@ -177,6 +191,17 @@ if ($keyRaw -notmatch 'BEGIN OPENSSH PRIVATE KEY' -and $keyRaw -notmatch 'BEGIN 
     exit 1
 } else {
     Write-Host "  v Klucz prywatny SSH: zweryfikowany" -ForegroundColor Green
+}
+
+# Ten sam test dla klucza core (jesli podany)
+if ($coreDeployKeyPath) {
+    $coreRaw = Get-Content $coreDeployKeyPath -Raw
+    if ($coreRaw -match 'BEGIN OPENSSH PRIVATE KEY' -or $coreRaw -match 'BEGIN PRIVATE KEY') {
+        Write-Host "  v Klucz core: zweryfikowany" -ForegroundColor Green
+    } else {
+        Write-Host "  x Klucz core nie jest kluczem prywatnym SSH: $coreDeployKeyPath" -ForegroundColor Red
+        exit 1
+    }
 }
 W-Log "DeployKey: $deployKeyPath"
 
@@ -323,6 +348,7 @@ if ($EnableLUKS) { Write-Host "  LUKS:    wlaczony" -ForegroundColor White }
 Write-Host ""
 
 $ba = @("-Client", $CLIENT, "-DeployKeyPath", "'$deployKeyPath'", "-MediaPath", "'$MEDIA_DIR'", "-InstallPath", "'$BASE_DIR'")
+if ($coreDeployKeyPath) { $ba += @("-CoreDeployKeyPath", "'$coreDeployKeyPath'") }
 if ($VM_RAM -ne 4096) { $ba += @("-VM_RAM", $VM_RAM) }
 if ($VM_CPU -ne 2) { $ba += @("-VM_CPU", $VM_CPU) }
 if ($VM_DISK -ne 40960) { $ba += @("-VM_DISK", $VM_DISK) }

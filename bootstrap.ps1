@@ -17,6 +17,9 @@ param(
     [string]$DeployKeyPath,
 
     [Parameter(Mandatory = $false)]
+    [string]$CoreDeployKeyPath,
+
+    [Parameter(Mandatory = $false)]
     [string]$MediaPath,
 
     [Parameter(Mandatory = $false)]
@@ -314,6 +317,7 @@ Write-StructuraLog "Launcher files staged in $launcherDir"
 # Step 8: Build setup.ps1 arguments
 $setupArgs = @("-Client", $Client)
 if ($DeployKeyPath) { $setupArgs += @("-DeployKeyPath", $DeployKeyPath) }
+if ($CoreDeployKeyPath) { $setupArgs += @("-CoreDeployKeyPath", $CoreDeployKeyPath) }
 if ($MediaPath) { $setupArgs += @("-MediaPath", $MediaPath) }
 if ($VM_RAM) { $setupArgs += @("-VM_RAM", $VM_RAM) }
 if ($VM_CPU) { $setupArgs += @("-VM_CPU", $VM_CPU) }
