@@ -1037,6 +1037,22 @@ autoinstall:
     username: '@@VBOX_INSERT_USER_LOGIN@@'
     realname: '@@VBOX_INSERT_USER_FULL_NAME@@'
     password: '@@VBOX_INSERT_USER_PASSWORD_SHACRYPT512@@'
+  # Pakiety - stock szablon VirtualBox ich NIE ma, a bez openssh-server
+  # nie da sie wejsc na VM po instalacji (sshd nie istnieje -> NAT zwraca
+  # "Connection reset"). git/curl potrzebne pozniej w ETAPIE 5-6.
+  packages:
+    - openssh-server
+    - curl
+    - git
+    - ca-certificates
+  # openssh-server + klucz publiczny; haslo zostaje jako awaryjne wejscie
+  # (allow-pw: true), bo przy pierwszym wdrozeniu czesto trzeba sie dostac
+  # na VM nawet gdy klucz nie zadziala.
+  ssh:
+    install-server: true
+    allow-pw: true
+    authorized-keys:
+      - __SSH_PUBKEY__
   user-data:
     timezone: @@VBOX_INSERT_TIME_ZONE_UX@@
     ntp:
