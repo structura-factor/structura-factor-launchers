@@ -1053,18 +1053,14 @@ autoinstall:
     allow-pw: true
     authorized-keys:
       - __SSH_PUBKEY__
+  # UWAGA: NIE definiujemy tu drugi raz tego samego usera przez "users:".
+  # Dokumentacja Ubuntu: "identity and user-data/users sections are not being
+  # merged" - podwojna definicja 'structura' jest ryzykiem (konflikt), a nie
+  # zabezpieczeniem. Klucz wgrywa sekcja ssh.authorized-keys powyzej.
   user-data:
     timezone: @@VBOX_INSERT_TIME_ZONE_UX@@
     ntp:
       enabled: true
-    users:
-      - name: '@@VBOX_INSERT_USER_LOGIN@@'
-        gecos: '@@VBOX_INSERT_USER_FULL_NAME@@'
-        groups: [adm, sudo]
-        lock-passwd: false
-        shell: /bin/bash
-        ssh_authorized_keys:
-          - __SSH_PUBKEY__
   late-commands:
     - cp /cdrom/vboxpostinstall.sh /target/root/vboxpostinstall.sh
     - chmod +x /target/root/vboxpostinstall.sh
