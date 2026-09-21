@@ -1152,34 +1152,66 @@ function Get-VmIpAndSsh {
     Write-Host "  (Ubuntu installation takes 5-15 minutes, please be patient)" -ForegroundColor DarkGray
     Write-Host ""
 
+    # CZEKAMY WYLACZNIE NA UDANE UWIERZYTELNIENIE KLUCZEM (SSH_OK).
+    #
+    # UWAGA: NIE wolno traktowac "Permission denied" jako sygnalu gotowosci.
+    # sshd LIVE INSTALATORA odpowiada tak samo (konto jeszcze nie istnieje),
+    # wiec przerwanie petli na "Permission denied" konczy sie przejsciem dalej
+    # w trakcie instalacji - dokladnie tak powstawal blad "SSH key auth failed",
+    # gdy na konsoli wciaz lecialo "installing kernel".
+    #
+    # Klucz (ssh_authorized_keys z --script-template) jest wgrywany przez
+    # cloud-init dopiero na ZAINSTALOWANYM systemie, po pierwszym starcie.
+    # Wiec: sukces klucza == instalacja zakonczona i system wstal.
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     $ubuntuUp = $false
+    $sshReady = $false
     $probeKey = "$env:USERPROFILE\.ssh\id_ed25519"
-    for ($i = 0; $i -lt 60; $i++) {
+    $sawDenied = $false
+    $maxIter = 90          # 90 x 30s = 45 min
+    for ($i = 0; $i -lt $maxIter; $i++) {
         $probe = ssh -v -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=8 -o BatchMode=yes -i $probeKey $sshHost "echo SSH_OK" 2>&1
         if ($probe -match 'SSH_OK') {
             $ErrorActionPreference = $prevEAP
             Write-Host ""
             Write-Check "SSH gotowe (klucz dziala) - ${sshHost}:${sshPort}"
-            return @{ VmExists = $true; VmIp = $sshHost }
-        }
-        if ($probe -match 'Permission denied') {
-            $ubuntuUp = $true
-            Write-Host ""
-            Write-Check "Ubuntu zainstalowane (sshd odpowiada, brak klucza)"
+            $sshReady = $true
             break
         }
-        $min = [math]::Floor($i * 30 / 60)
+        if ($probe -match 'Permission denied') {
+            # To NORMALNE w trakcie instalacji - nie przerywamy, tylko raportujemy.
+            if (-not $sawDenied) {
+                $sawDenied = $true
+                $ubuntuUp = $true
+                Write-Host ""
+                Write-Host "  ! sshd odpowiada, ale klucz jeszcze nieaktywny (instalacja w toku)" -ForegroundColor DarkGray
+                Write-Host "    Czekam az cloud-init utworzy konto i wgra klucz..." -ForegroundColor DarkGray
+            }
+        }
+
+        # Szybkie wyjscie: jesli maszyna sie wylaczyla/stoi, nie ma na co czekac
         $vmState = (& $Vbox showvminfo $VM_NAME --machinereadable 2>$null | Select-String 'VMState=')
         $stateStr = if ($vmState) { $vmState -replace 'VMState=|"','' } else { 'unknown' }
-        Write-Host "  [${min}min] VM: $stateStr - instalacja w toku..." -ForegroundColor DarkGray
+        $min = [math]::Floor($i * 30 / 60)
+        $phase = if ($sawDenied) { 'sshd jest, czekam na klucz' } else { 'start instalatora' }
+        Write-Host "  [${min}min] VM: $stateStr - $phase..." -ForegroundColor DarkGray
+        if ($stateStr -eq 'poweroff' -or $stateStr -eq 'aborted') {
+            Write-Check "VM zatrzymala sie nieoczekiwanie (stan: $stateStr)" -Fail
+            $ErrorActionPreference = $prevEAP
+            return @{ VmExists = $true; VmIp = $null }
+        }
         Start-Sleep -Seconds 30
     }
     $ErrorActionPreference = $prevEAP
 
-    if (-not $ubuntuUp) {
-        Write-Check "Ubuntu nie odpowiedzialo po 30 min - sprawdz VM" -Warn
+    if (-not $sshReady) {
+        Write-Check "SSH kluczem nie zadzialal po $([math]::Floor($maxIter*30/60)) min" -Warn
+        if ($sawDenied) {
+            Write-Host "    sshd odpowiadal, ale klucz nigdy nie stal sie aktywny." -ForegroundColor Yellow
+            Write-Host "    Sprawdz w VM: sudo cat /var/log/vboxpostinstall.log oraz" -ForegroundColor DarkGray
+            Write-Host "                  sudo cloud-init status --long" -ForegroundColor DarkGray
+        }
         return @{ VmExists = $true; VmIp = $null }
     }
 
@@ -2068,6 +2100,10 @@ try {
 
     $vmResult = Invoke-VMCreation -Media $media -UnattendPath $unattendPath
     $vmIp = $vmResult.VmIp
+
+    if (-not $vmIp) {
+        throw "VM nie udostepnila dzialajacego SSH - instalacja nie dobiegla konca. Sprawdz C:\structura\setup.log i konsolę VM (VirtualBox Manager -> Show)."
+    }
 
     # --- ETAP 4/8: Docker setup ---
     Write-Etap -Number 4 -Name "Docker setup (apt, docker, compose, verification)"
