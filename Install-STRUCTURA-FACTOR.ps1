@@ -106,8 +106,16 @@ $keyFiles = Get-ChildItem -Path $KEYS_DIR -File -ErrorAction SilentlyContinue | 
 # Rozpoznajemy je po nazwie pliku; reszta idzie jako klucz klienta.
 $coreDeployKeyPath = $null
 if ($keyFiles) {
+    # Wybor deterministyczny (Get-ChildItem sortuje alfabetycznie, wiec samo
+    # "First 1" bralo stary plik 'deploy_key' zamiast 'deploy_key_client').
     $coreFile = $keyFiles | Where-Object { $_.Name -match 'core' } | Select-Object -First 1
-    $clientFile = $keyFiles | Where-Object { $_.Name -notmatch 'core' } | Select-Object -First 1
+    $clientFile = $keyFiles | Where-Object { $_.Name -match 'client' } | Select-Object -First 1
+    if (-not $clientFile) {
+        $clientFile = $keyFiles | Where-Object { $_.Name -notmatch 'core' -and $_.Name -ne 'deploy_key' } | Select-Object -First 1
+    }
+    if (-not $clientFile) {
+        $clientFile = $keyFiles | Where-Object { $_.Name -notmatch 'core' } | Select-Object -First 1
+    }
     if ($coreFile) {
         $coreDeployKeyPath = $coreFile.FullName
         Write-Host "  v Klucz core: klucze\$($coreFile.Name)" -ForegroundColor Green

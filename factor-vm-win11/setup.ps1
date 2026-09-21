@@ -342,6 +342,80 @@ function Get-FileSha256 {
     return (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLower()
 }
 
+# ============================================================================
+# Public key extraction (bezpieczne dla Windows)
+# ============================================================================
+
+# Zwraca klucz publiczny z klucza prywatnego albo $null.
+#
+# DLACZEGO NIE PROSTO `ssh-keygen -y` W SKRYPCIE:
+#   1) Na Windows ssh-keygen odrzuca klucz, ktorego ACL jest "zbyt otwarty":
+#        @@@@@ WARNING: UNPROTECTED PRIVATE KEY FILE! @@@@@
+#      i konczy sie kodem 255. Klucze z SMB/OneDrive/pendrive tak wlasnie
+#      wygladaja.
+#   2) ssh-keygen pisze ostrzezenia na stderr, a przy $ErrorActionPreference='Stop'
+#      PowerShell 5.1 zamienia stderr polecenia natywnego na RemoteException
+#      i PRZERYWA cala instalacje (dokladnie ten blad: "System.Management.Automation.RemoteException").
+#
+# Dlatego: lokalna kopia z zawezonym ACL, uruchomienie z EAP=Continue
+# i sprawdzenie wyniku zamiast wyjatku.
+function Get-SshPublicKey {
+    param([string]$PrivateKeyPath)
+
+    if (-not $PrivateKeyPath -or -not (Test-Path -LiteralPath $PrivateKeyPath)) { return $null }
+
+    $tmpKey = Join-Path $env:TEMP ("structura_pub_{0}" -f ([guid]::NewGuid().ToString('N')))
+    try {
+        Copy-Item -LiteralPath $PrivateKeyPath -Destination $tmpKey -Force
+
+        # Zawez ACL do biezacego uzytkownika - bez tego ssh-keygen odmawia.
+        try {
+            $acl = Get-Acl $tmpKey
+            $acl.SetAccessRuleProtection($true, $false)
+            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                "$env:USERDOMAIN\$env:USERNAME", "FullControl", "Allow")
+            $acl.AddAccessRule($rule)
+            Set-Acl $tmpKey $acl
+        } catch {
+            Write-Log "Get-SshPublicKey: nie udalo sie zawezic ACL ($_)" -Level "WARN"
+        }
+
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $out = & ssh-keygen -y -f $tmpKey 2>&1
+        $rc = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+
+        if ($rc -ne 0) {
+            Write-Log "Get-SshPublicKey: ssh-keygen exit $rc ($out)" -Level "WARN"
+            return $null
+        }
+
+        $pub = ($out | Where-Object { $_ -match '^(ssh-|ecdsa-)' } | Select-Object -First 1)
+        if (-not $pub) { return $null }
+        return $pub.Trim()
+    } catch {
+        Write-Log "Get-SshPublicKey: $_" -Level "WARN"
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $tmpKey -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Klucz publiczny z pliku .pub (jesli istnieje obok klucza prywatnego).
+# Prostsze i pewne - nie wymaga ssh-keygen.
+function Get-SshPublicKeyFromPubFile {
+    param([string]$PrivateKeyPath)
+    if (-not $PrivateKeyPath) { return $null }
+    foreach ($cand in @("$PrivateKeyPath.pub", ([System.IO.Path]::ChangeExtension($PrivateKeyPath, '.pub')))) {
+        if ($cand -and (Test-Path -LiteralPath $cand)) {
+            $line = Get-Content -LiteralPath $cand -TotalCount 1 -ErrorAction SilentlyContinue
+            if ($line -match '^(ssh-|ecdsa-)') { return $line.Trim() }
+        }
+    }
+    return $null
+}
+
 function Invoke-WithRetry {
     param(
         [scriptblock]$Action,
@@ -903,9 +977,13 @@ function Invoke-VMCreation {
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         # Get the public key from the deploy key for SSH key auth
-        $pubKey = ""
-        if ($DeployKeyPath -and (Test-Path $DeployKeyPath)) {
-            $pubKey = (ssh-keygen -y -f $DeployKeyPath 2>$null)
+        # (najpierw plik .pub - pewny i szybki; potem ssh-keygen z zawezonym ACL)
+        $pubKey = Get-SshPublicKeyFromPubFile -PrivateKeyPath $DeployKeyPath
+        if (-not $pubKey) {
+            $pubKey = Get-SshPublicKey -PrivateKeyPath $DeployKeyPath
+        }
+        if (-not $pubKey) {
+            Write-Log "Nie udalo sie wyznaczyc klucza publicznego z $DeployKeyPath" -Level "WARN"
         }
         # Use --post-install-template: a script file on host that gets copied to VM and executed
         $postInstallScript = "$LOG_DIR\post-install.sh"
@@ -1024,10 +1102,13 @@ function Get-VmIpAndSsh {
 
     Write-Host ""
     Write-Host "  Installing SSH key via VM console..." -ForegroundColor White
-    # Get public key
-    $pubKey = ""
-    if ($DeployKeyPath -and (Test-Path $DeployKeyPath)) {
-        $pubKey = (ssh-keygen -y -f $DeployKeyPath 2>$null)
+    # Get public key (.pub najpierw; ssh-keygen jako fallback)
+    $pubKey = Get-SshPublicKeyFromPubFile -PrivateKeyPath $DeployKeyPath
+    if (-not $pubKey) {
+        $pubKey = Get-SshPublicKey -PrivateKeyPath $DeployKeyPath
+    }
+    if (-not $pubKey) {
+        Write-Check "Nie udalo sie odczytac klucza publicznego - SSH key auth moze nie zadzialac" -Warn
     }
 
     # Use VBoxManage keyboard input to login and install SSH key

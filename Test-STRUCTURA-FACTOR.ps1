@@ -104,6 +104,17 @@ function Copy-KeyToStore {
     # normalizuj CRLF -> LF (klucz SSH z CRLF lamie sie przy uzyciu)
     $text = [System.Text.Encoding]::UTF8.GetString($bytes) -replace "`r`n", "`n"
     [System.IO.File]::WriteAllText($dest, $text, [System.Text.UTF8Encoding]::new($false))
+
+    # Skopiuj tez .pub jesli jest - instalator uzywa go do wgrania klucza
+    # do authorized_keys na VM (pewniejsze niz wywolywanie ssh-keygen,
+    # ktory na Windows odrzuca klucze z szerokim ACL).
+    foreach ($pubCand in @("$($File.FullName).pub")) {
+        if (Test-Path -LiteralPath $pubCand) {
+            $pubText = ([System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($pubCand))) -replace "`r`n", "`n"
+            [System.IO.File]::WriteAllText("$dest.pub", $pubText, [System.Text.UTF8Encoding]::new($false))
+            break
+        }
+    }
     return $dest
 }
 
