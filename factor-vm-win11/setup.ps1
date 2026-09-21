@@ -1336,74 +1336,17 @@ function Get-VmIpAndSsh {
         return @{ VmExists = $true; VmIp = $null }
     }
 
+    # Klucz JEST juz aktywny (SSH_OK powyzej) - wgrywa go cloud-init przez
+    # ssh.authorized-keys z szablonu autoinstall. Wiec NIE ma po co wstrzykiwac
+    # klawiatury do konsoli VM.
+    #
+    # USUNIETO (Fala 1n): martwy blok keyboardputstring, ktory wykonywal sie
+    # MIJAJAC sprawdzenie sshReady - stad na konsoli widac bylo
+    # "Installing SSH key via VM console..." i sudo czekajace na haslo
+    # dlugo PO tym, jak SSH juz dzialalo. Wstrzykiwanie klawiatury nie dziala
+    # w trybie headless i nie jest juz do niczego potrzebne.
     Write-Host ""
-    Write-Host "  Installing SSH key via VM console..." -ForegroundColor White
-    # Get public key (.pub najpierw; ssh-keygen jako fallback)
-    $pubKey = Get-SshPublicKeyFromPubFile -PrivateKeyPath $DeployKeyPath
-    if (-not $pubKey) {
-        $pubKey = Get-SshPublicKey -PrivateKeyPath $DeployKeyPath
-    }
-    if (-not $pubKey) {
-        Write-Check "Nie udalo sie odczytac klucza publicznego - SSH key auth moze nie zadzialac" -Warn
-    }
-
-    # Use VBoxManage keyboard input to login and install SSH key
-    # Wrap in EAP=Continue to avoid RemoteException from VBoxManage stderr
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-
-    # Send login: structura
-    & $Vbox controlvm $VM_NAME keyboardputstring "structura" 2>&1 | Out-Null
-    Start-Sleep -Seconds 2
-    & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
-    Start-Sleep -Seconds 3
-
-    # Send password: structura
-    & $Vbox controlvm $VM_NAME keyboardputstring "structura" 2>&1 | Out-Null
-    Start-Sleep -Seconds 2
-    & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
-    Start-Sleep -Seconds 5
-
-    # Install SSH key
-    if ($pubKey) {
-        $keyCmd = "mkdir -p ~/.ssh && echo ''$pubKey'' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && echo KEY_DONE"
-        & $Vbox controlvm $VM_NAME keyboardputstring $keyCmd 2>&1 | Out-Null
-        Start-Sleep -Seconds 1
-        & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
-        Start-Sleep -Seconds 5
-    }
-
-    # Enable SSH
-    & $Vbox controlvm $VM_NAME keyboardputstring "sudo systemctl enable ssh && sudo systemctl restart ssh && echo SSH_ENABLED" 2>&1 | Out-Null
-    Start-Sleep -Seconds 1
-    & $Vbox controlvm $VM_NAME keyboardputscancode 1c 9c 2>&1 | Out-Null  # Enter
-    Start-Sleep -Seconds 5
-
-    $ErrorActionPreference = $prevEAP
-
-    # Now try SSH key auth
-    Write-Host "  Testing SSH connection..." -ForegroundColor White
-    $sshStable = $false
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    for ($i = 0; $i -lt 12; $i++) {
-        try {
-            $sshTest = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL","-o","ConnectTimeout=10","-o","BatchMode=yes","-i","$env:USERPROFILE\\.ssh\\id_ed25519",$sshHost,"echo SSH_OK"))).Output
-            if ($sshTest -match 'SSH_OK') {
-                $sshStable = $true
-                break
-            }
-        } catch { }
-        Start-Sleep -Seconds 10
-    }
-    $ErrorActionPreference = $prevEAP
-
-    if ($sshStable) {
-        Write-Check "SSH ready (key auth) on ${sshHost}:${sshPort}"
-    } else {
-        Write-Check "SSH key auth failed" -Warn
-        Write-Host "  Sprawdz VM: VBoxManage controlvm $VM_NAME screenshotpng C:\structura\vm-screen.png" -ForegroundColor Yellow
-    }
+    Write-Check "Klucz SSH aktywny - pomijam wstrzykiwanie klawiatury (niepotrzebne)"
     return @{ VmExists = $true; VmIp = $sshHost }
 }
 
