@@ -995,59 +995,90 @@ function Invoke-VMCreation {
         }
         Write-Log "Klucz publiczny klienta: $($pubKey.Substring(0, [Math]::Min(50, $pubKey.Length)))..."
 
-        # Wgranie klucza publicznego do authorized_keys WEWNATRZ goscia.
+        # ====================================================================
+        # KLUCZ SSH - wlasciwy mechanizm
+        # ====================================================================
+        # Przyczyna realnej awarii (potwierdzona bugiem Ubuntu #2090834):
+        #   VirtualBox wstawia uzytkownika do autoinstall -> "user-data.users",
+        #   a NIE do "identity". Subiquity tworzy takiego uzytkownika dopiero
+        #   przy PIERWSZYM BOOTCIE (cloud-init). Skrypt z --post-install-template
+        #   jest natomiast wykonywany w late-commands, czyli PRZED tym bootem.
+        #   Skutek: "chown structura:structura" -> "invalid user" -> exit 1
+        #   -> curtin in-target zwraca blad -> instalacja sie NIE konczy,
+        #   brak restartu, konsola zostaje w live installerze ("login incorrect").
         #
-        # JAK TO DZIALA (potwierdzone w zrodlach VirtualBox + subiquity):
-        #   Szablon VirtualBox "ubuntu_autoinstall_user_data" zawiera late-commands:
-        #     - cp /cdrom/vboxpostinstall.sh /target/root/vboxpostinstall.sh
-        #     - curtin in-target --target=/target -- /bin/bash /root/vboxpostinstall.sh --direct
-        #   czyli --post-install-template JEST wykonywany. Nie wykonywal sie
-        #   w naszej instalacji, bo plik byl zapisany z CRLF ("Out-File"),
-        #   przez co shebang to "#!/bin/bash<CR>" i jadro nie znajdowalo interpretera.
-        #
-        # Uzywamy DWOCH mechanizmow (nadmiarowo, oba niezalezne):
-        #   1) --post-install-command - "command to run after the installation
-        #      is completed"; wykonywane na koncu w gosciu.
-        #   2) --post-install-template - plik skryptu (teraz zapisany z LF).
-        #
-        # Komenda (1) jest kodowana base64 - zero problemow z cytowaniem
-        # w YAML autoinstall i w shellu goscia (spacje, cudzyslowy, znak dolara).
-        $keyLine = if ($pubKey) { $pubKey } else { "" }
-        $cmdPlain = "mkdir -p /home/structura/.ssh && chmod 700 /home/structura/.ssh && printf '%s\n' '" + $keyLine + "' >> /home/structura/.ssh/authorized_keys && chmod 600 /home/structura/.ssh/authorized_keys && chown -R structura:structura /home/structura/.ssh && systemctl enable ssh ; systemctl restart ssh"
-        $cmdB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cmdPlain))
-        $postInstallCommand = "echo $cmdB64 | base64 -d | bash"
+        # ROZWIAZANIE: nadpisujemy szablon user-data przez --script-template
+        # i wstawiamy klucz w "ssh_authorized_keys" uzytkownika. Cloud-init
+        # zaklada konto i klucz przy pierwszym starcie - wtedy user juz istnieje.
 
-        # --- Mechanizm (2): plik skryptu post-install (siatka bezpieczenstwa) ---
-        # UWAGA: MUSI byc zapisany z LF, nie CRLF. PowerShell "Out-File" lamie
-        # linie CRLF, przez co shebang staje sie "#!/bin/bash<CR>" i jadro szuka
-        # nieistniejącego interpretera "/bin/bash<CR>" -> skrypt NIE WYKONUJE SIE.
-        # To byla przyczyna, ze klucz nie trafial na VM.
+        # Wygeneruj wlasny szablon (stock VirtualBox + ssh_authorized_keys)
+        $keyForYaml = if ($pubKey) { $pubKey } else { "" }
+        $scriptTemplatePath = "$LOG_DIR\ubuntu-user-data-template"
+        $tmpl = @'
+#cloud-config
+autoinstall:
+  version: 1
+  apt:
+    fallback: offline-install
+  locale: @@VBOX_INSERT_LOCALE@@
+  keyboard:
+    layout: us
+  shutdown: SHUTDOWN_MODE
+  storage:
+    layout:
+      name: direct
+    swap:
+      size: 0
+@@VBOX_COND_HAS_PROXY@@
+  proxy: @@VBOX_INSERT_PROXY@@
+@@VBOX_COND_END@@
+  identity:
+    hostname: '@@VBOX_INSERT_HOSTNAME_WITHOUT_DOMAIN@@'
+    username: '@@VBOX_INSERT_USER_LOGIN@@'
+    realname: '@@VBOX_INSERT_USER_FULL_NAME@@'
+    password: '@@VBOX_INSERT_USER_PASSWORD_SHACRYPT512@@'
+  user-data:
+    timezone: @@VBOX_INSERT_TIME_ZONE_UX@@
+    ntp:
+      enabled: true
+    users:
+      - name: '@@VBOX_INSERT_USER_LOGIN@@'
+        gecos: '@@VBOX_INSERT_USER_FULL_NAME@@'
+        groups: [adm, sudo]
+        lock-passwd: false
+        shell: /bin/bash
+        ssh_authorized_keys:
+          - __SSH_PUBKEY__
+  late-commands:
+    - cp /cdrom/vboxpostinstall.sh /target/root/vboxpostinstall.sh
+    - chmod +x /target/root/vboxpostinstall.sh
+    - curtin in-target --target=/target -- /bin/bash /root/vboxpostinstall.sh --direct
+'@
+        $tmpl = $tmpl.Replace('__SSH_PUBKEY__', $keyForYaml).Replace('SHUTDOWN_MODE', 'reboot')
+        [System.IO.File]::WriteAllText($scriptTemplatePath, ($tmpl -replace "`r`n", "`n"), [System.Text.UTF8Encoding]::new($false))
+        Write-Log "script-template (user-data) zapisany: $scriptTemplatePath"
+
+        # --- Skrypt post-install ---
+        # UWAGA: NIE wolno tu uzywac chown/useradd na 'structura' - konto
+        # nie istnieje w late-commands (patrz komentarz wyzej). Klucz SSH
+        # wgrywa cloud-init przez ssh_authorized_keys.
+        # Plik MUSI byc z LF (shebang "#!/bin/bash<CR>" lamie sie w kernelu).
         $postInstallScript = "$LOG_DIR\post-install.sh"
-        $keyLine = if ($pubKey) { $pubKey } else { "" }
         $shText = @'
 #!/bin/bash
-# Struktura FACTOR - wgranie klucza deploy do authorized_keys
-# Wywolywane przez VirtualBox: curtin in-target -- /bin/bash /root/vboxpostinstall.sh --direct
+# Struktura FACTOR - kroki po instalacji (late-commands).
+# Uruchamiane PRZED pierwszym restartem - konto uzytkownika jeszcze NIE istnieje,
+# dlatego ZADNYCH chown/useradd tutaj. Klucz SSH wgrywa cloud-init.
 TARGET=/
-# Bez "set -u": VirtualBox/subiquity wywoluje ten skrypt bez argumentow
-# ("/bin/bash /root/vboxpostinstall.sh"), a "$1" na nieustawionej zmiennej
-# przerywalby skrypt w trybie set -u.
-if [ "${1:-}" = "--direct" ] || [ -z "${1:-}" ]; then TARGET=/; else TARGET=/target; fi
-install -d -m 700 "$TARGET/home/structura/.ssh" 2>/dev/null || mkdir -p "$TARGET/home/structura/.ssh"
-printf '%s
-' 'KEY_PLACEHOLDER' >> "$TARGET/home/structura/.ssh/authorized_keys"
-chmod 600 "$TARGET/home/structura/.ssh/authorized_keys" 2>/dev/null || true
-chmod 700 "$TARGET/home/structura/.ssh"
-chown -R structura:structura "$TARGET/home/structura/.ssh" 2>/dev/null || true
-systemctl enable ssh 2>/dev/null || true
-echo "post-install: authorized_keys gotowe"
+if [ "${1:-}" = "--direct" ]; then TARGET=/; else TARGET=/target; fi
+echo "post-install: start (target=$TARGET)"
+echo "post-install: authorized_keys wgrywa cloud-init przy pierwszym starcie"
 '@
-        $shText = $shText.Replace('KEY_PLACEHOLDER', $keyLine)
-        # LF wymuszone jawnie (Replace usuwa ewentualne CR z here-stringa)
         $shText = ($shText -replace "`r`n", "`n")
         [System.IO.File]::WriteAllText($postInstallScript, $shText, [System.Text.UTF8Encoding]::new($false))
 
-        Write-Log "post-install-command: $postInstallCommand"
+        Write-Log "post-install-template: $postInstallScript"
+        Write-Log "script-template: $scriptTemplatePath"
 
         $unattendedArgs = @(
             "unattended", "install", $VM_NAME,
@@ -1057,7 +1088,9 @@ echo "post-install: authorized_keys gotowe"
             "--full-user-name=STRUCTURA",
             "--time-zone=Europe/Warsaw",
             "--hostname=structura.local",
-            "--post-install-command=$postInstallCommand",
+            # user-data z ssh_authorized_keys - klucz wgrywa cloud-init
+            # przy pierwszym starcie (po utworzeniu konta). Patrz komentarz wyzej.
+            "--script-template=$scriptTemplatePath",
             "--post-install-template=$postInstallScript"
         )
         & $vbox @unattendedArgs 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
