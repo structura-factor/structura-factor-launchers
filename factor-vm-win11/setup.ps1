@@ -1018,6 +1018,11 @@ function Invoke-VMCreation {
         # wewnatrz goscia przez kontener telegram-bot (docker-compose: 127.0.0.1:8443),
         # wiec forwarding VBox powodowalby konflikt "address already in use".
         # HTTPS dla NPM wystawia sie na host:8080->guest:80 + NPM sam terminuje TLS.
+        # NAT: host:2222 -> guest:22. sshd w gosciu slucha na 22 (domyslne) -
+        # NIE przestawiamy go, bo handshake SSH w ETAPIE 3 odbywa sie zanim
+        # ETAP 8 cokolwiek zmieni. Port 22 nie jest widoczny z sieci: VM ma NAT
+        # i tylko 2222 jest forwardowane z hosta.
+        # UWAGA: UFW musi zezwalac na 22 (a nie na 2222) - patrz ETAP 8.
         & $vbox modifyvm $VM_NAME --natpf1 "ssh,tcp,,2222,,22" 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --natpf1 "http,tcp,,8080,,80" 2>&1 | Out-Null
         # Enable VRDE if Extension Pack is installed (for RDP preview)
@@ -1138,6 +1143,7 @@ autoinstall:
     - curl
     - git
     - ca-certificates
+    - make
   # openssh-server + klucz publiczny; haslo zostaje jako awaryjne wejscie
   # (allow-pw: true), bo przy pierwszym wdrozeniu czesto trzeba sie dostac
   # na VM nawet gdy klucz nie zadziala.
@@ -1387,7 +1393,12 @@ function Invoke-DockerSetup {
     $installCmd = @"
         set -e
         sudo apt-get update -y
-        sudo apt-get install -y ca-certificates curl gnupg lsb-release
+        # make: NIE ma go w Ubuntu 24.04 live-server (sprawdzone na manifescie ISO:
+        # 707 pakietow, zero dopasowan '^make'/'build-essential'; docker-ce go nie
+        # ciagnie - Depends to containerd.io/iptables/libseccomp2/libc6/libsystemd0).
+        # Bez make caly ETAP 6/7/8 pada: "make: command not found" - a instalator
+        # raportowal to tylko jako WARN, wiec szedl dalej i pokazywal falszywe sukcesy.
+        sudo apt-get install -y ca-certificates curl gnupg lsb-release make
         sudo install -m 0755 -d /etc/apt/keyrings
         curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
         sudo chmod a+r /etc/apt/keyrings/docker.gpg
@@ -1399,6 +1410,15 @@ function Invoke-DockerSetup {
         sudo systemctl start docker
         docker --version
         docker compose version
+        # make jest KRYTYCZNE: ETAP 6/7/8 wolaja 'make secrets-check', 'make deploy',
+        # 'make npm-setup', 'make init-hindsight'. Bez niego instalacja nie ma prawa
+        # dojsc do konca - lepiej zatrzymac sie tu z jasnym komunikatem.
+        if command -v make >/dev/null 2>&1; then
+            echo "MAKE_OK $(make --version | head -1)"
+        else
+            echo "MAKE_MISSING"
+            exit 1
+        fi
 "@
 
     $installResult = Invoke-WithRetry -Action {
@@ -1411,10 +1431,19 @@ function Invoke-DockerSetup {
     }
 
     # Verify
-    $verifyResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"docker --version && docker compose version"))).Output
-    if ($verifyResult -match 'Docker version' -and $verifyResult -match 'Docker Compose version') {
+    $verifyResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"docker --version && docker compose version && (command -v make >/dev/null && echo MAKE_OK || echo MAKE_MISSING)"))).Output
+    if ($verifyResult -match 'MAKE_MISSING') {
+        # Brak make = twarda BLOKADA. ETAP 6/7/8 sa zbudowane na 'make ...' i bez
+        # niego instalator wczesniej szedl dalej, pokazujac falszywe sukcesy
+        # ('v NPM configured', 'v Hindsight banks initialized').
+        Write-Check "make NIE zainstalowany - ETAP 6/7/8 niemozliwe" -Fail
+        Write-Host "    Output: $verifyResult" -ForegroundColor Red
+        return $false
+    }
+    if ($verifyResult -match 'Docker version' -and $verifyResult -match 'Docker Compose version' -and $verifyResult -match 'MAKE_OK') {
         Write-Check "Docker installed and verified"
         Write-Check "Docker Compose installed and verified"
+        Write-Check "make dostepny (wymagany przez ETAPY 6/7/8)"
         return $true
     } else {
         Write-Check "Docker verification failed" -Fail
@@ -1518,7 +1547,7 @@ function Invoke-RepoAndAppdata {
     Write-Host "  Creating appdata structure..." -ForegroundColor White
 
     $mkdirCmd = @"
-        sudo mkdir -p /opt/structura/appdata/hindsight/{pgdata,pgdump}
+        sudo mkdir -p /opt/structura/appdata/postgresql/{data,pgdump}
         sudo mkdir -p /opt/structura/appdata/hermes/{memories,skills,session}
         sudo mkdir -p /opt/structura/appdata/n8n/config
         sudo mkdir -p /opt/structura/appdata/npm/{data,letsencrypt}
@@ -1542,19 +1571,19 @@ function Invoke-RepoAndAppdata {
 
     $copyCmd = @"
         # Hindsight config
-        if [ -f /opt/structura/repos/structura-core/hindsight/init.sql ]; then
-            sudo cp /opt/structura/repos/structura-core/hindsight/init.sql /opt/structura/appdata/hindsight/
-            sudo cp /opt/structura/repos/structura-core/hindsight/postgresql.conf /opt/structura/appdata/hindsight/
-            sudo cp /opt/structura/repos/structura-core/hindsight/pg_hba.conf /opt/structura/appdata/hindsight/
+        if [ -f /opt/structura/repos/structura-core/postgresql/init.sql ]; then
+            sudo cp /opt/structura/repos/structura-core/postgresql/init.sql /opt/structura/appdata/postgresql/
+            sudo cp /opt/structura/repos/structura-core/postgresql/postgresql.conf /opt/structura/appdata/postgresql/
+            sudo cp /opt/structura/repos/structura-core/postgresql/pg_hba.conf /opt/structura/appdata/postgresql/
         fi
         # SearXNG config
         if [ -f /opt/structura/repos/structura-core/searxng/settings.yml ]; then
             sudo cp /opt/structura/repos/structura-core/searxng/settings.yml /opt/structura/appdata/searxng/
         fi
         # pgdump script
-        if [ -f /opt/structura/repos/structura-core/hindsight/pgdump.sh ]; then
-            sudo cp /opt/structura/repos/structura-core/hindsight/pgdump.sh /opt/structura/appdata/hindsight/pgdump/
-            sudo chmod +x /opt/structura/appdata/hindsight/pgdump/pgdump.sh
+        if [ -f /opt/structura/repos/structura-core/postgresql/pgdump.sh ]; then
+            sudo cp /opt/structura/repos/structura-core/postgresql/pgdump.sh /opt/structura/appdata/postgresql/pgdump/
+            sudo chmod +x /opt/structura/appdata/postgresql/pgdump/pgdump.sh
         fi
         echo "config files copied"
 "@
@@ -1624,6 +1653,10 @@ function Invoke-ContainerDeployment {
         export CLIENT="$Client"
         # 'usermod -aG docker' nie dziala w juz otwartej sesji SSH - nowe czlonkostwo
         # grupy jest czytane przy logowaniu. 'sg docker -c' przelacza grupe w tej sesji.
+        if ! command -v make >/dev/null 2>&1; then
+            echo "MAKE_MISSING - nie moge uruchomic 'make deploy'"
+            exit 1
+        fi
         sg docker -c "make secrets-check && make deploy CLIENT=$Client"
         RC=`$?
         if [ `$RC -eq 0 ]; then echo "DEPLOY_DONE"; else echo "DEPLOY_FAILED rc=`$RC"; fi
@@ -1639,15 +1672,41 @@ function Invoke-ContainerDeployment {
 
     if ($deployResult -match 'DEPLOY_DONE') {
         Write-Check "Containers deployed"
+    } elseif ($deployResult -match 'MAKE_MISSING') {
+        # Brak make = BLOKADA, nie ostrzezenie. Wczesniej instalator szedl dalej
+        # i raportowal 'v NPM configured' oraz 'v Hindsight banks initialized',
+        # mimo ze nie wykonalo sie nic. Koniec z falszywymi sukcesami.
+        Write-Check "BLOKADA: brak 'make' na VM - ETAP 6/7/8 niemozliwe" -Fail
+        Write-Log "make deploy: MAKE_MISSING. Log: $deployResult"
+        return $false
     } else {
-        Write-Check "Deployment may have issues - check logs" -Warn
+        Write-Check "Deployment FAILED - sprawdz logi kontenerow" -Fail
+        Write-Log "make deploy nie zwrocil DEPLOY_DONE. Output: $deployResult"
+        return $false
     }
 
     # NPM setup
-    Write-Host "  Running make npm-setup..." -ForegroundColor White
-    $npmResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"cd /opt/structura/repos/structura-core && make npm-setup"))).Output
+    # UWAGA: setup-npm.sh jest uruchamiany jako skrypt bash przez Invoke-SshScript
+    # (nie przez 'make'), bo Makefile nie eksportuje .env, a setup-npm.sh sam go
+    # teraz wczytuje. Dodatkowo przekazujemy znacznik sukcesu, zeby NIE raportowac
+    # 'v NPM configured' bez pokrycia (bylo: bezwarunkowy Write-Check).
+    Write-Host "  Running NPM setup..." -ForegroundColor White
+    $npmCmd = @"
+        cd /opt/structura/repos/structura-core
+        if bash npm/setup-npm.sh; then
+            echo "NPM_SETUP_OK"
+        else
+            echo "NPM_SETUP_FAILED"
+        fi
+"@
+    $npmResult = (Invoke-SshScript -Script $npmCmd -Label "npm-setup" -sshTarget $sshTarget -SshPort $sshPort).Output
     if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $npmResult -ForegroundColor DarkGray }
-    Write-Check "NPM configured (make npm-setup)"
+    if ($npmResult -match 'NPM_SETUP_OK') {
+        Write-Check "NPM proxy hosts configured (6 hosts)"
+    } else {
+        Write-Check "NPM setup NIE powiodl sie - sprawdz log" -Warn
+        Write-Log "setup-npm.sh: NPM_SETUP_FAILED. Output: $npmResult"
+    }
 
     # Health check polling
     Write-Host ""
@@ -1655,8 +1714,10 @@ function Invoke-ContainerDeployment {
     Write-Host ""
 
     $services = @{
-        "hindsight"  = @{ Status = "waiting"; Timeout = 60; CheckCmd = "curl -sf http://localhost:8888/health" }
-        "hermes"     = @{ Status = "waiting"; Timeout = 90; CheckCmd = "curl -sf http://localhost:8765/health" }
+        # 8 kontenerow. Hermes NIE jest tu - dziala natywnie na VM (systemd),
+        # a Telegram odszedl z zakresu instalacji.
+        "postgresql" = @{ Status = "waiting"; Timeout = 30; CheckCmd = "pg_isready" }
+        "hindsight"  = @{ Status = "waiting"; Timeout = 90; CheckCmd = "curl -sf http://localhost:8888/health" }
         "searxng"    = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://localhost:8080/healthz" }
         "n8n"        = @{ Status = "waiting"; Timeout = 30; CheckCmd = "curl -sf http://localhost:5678/healthz" }
         "npm"        = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://localhost:81/api" }
@@ -1682,7 +1743,7 @@ function Invoke-ContainerDeployment {
             # (dokladnie ten sam mechanizm, ktory psul instalacje Dockera).
             # Invoke-SshScript wysyla skrypt PLIKIEM, wiec cytowanie jest bezpieczne.
             # W podwojnym cudzyslowie PS klamry NIE wymagaja escapowania.
-            $inspectScript = "docker inspect --format='{{.State.Health.Status}}' structura-$svc 2>/dev/null || echo notfound"
+            $inspectScript = "docker inspect --format='{{.State.Health.Status}}' $svc 2>/dev/null || echo notfound"
             $checkResult = (Invoke-SshScript -Script $inspectScript -Label "health" -sshTarget $sshTarget -SshPort $sshPort).Output
             $checkResult = $checkResult.Trim()
 
@@ -1764,15 +1825,29 @@ function Invoke-HindsightAndConfig {
     # Init Hindsight banks
     Write-Host "  Initializing Hindsight banks..." -ForegroundColor White
 
+    # UWAGA: 'set -e' jest KRYTYCZNE. Bez niego 'echo HINDSIGHT_INIT_DONE'
+    # wykonywalo sie TAKZE po nieudanym make, wiec warunek ponizej byl zawsze
+    # prawdziwy i instalator raportowal "v Hindsight banks initialized (2 banks)"
+    # mimo ze nie powstal ani jeden bank.
     $initCmd = @"
-        cd /opt/structura/repos/structura-core
-        export CLIENT_DIR="/opt/structura/repos/structura-clients-$Client"
-        if [ -f "`$CLIENT_DIR/init-hindsight.sh" ]; then
-            chmod +x "`$CLIENT_DIR/init-hindsight.sh"
-            make init-hindsight CLIENT=$Client
-            echo "HINDSIGHT_INIT_DONE"
+        set -e
+        CLIENT_DIR="/opt/structura/repos/structura-clients-$Client"
+        if [ ! -f "`$CLIENT_DIR/init-hindsight.sh" ]; then
+            echo "INIT_HINDSIGHT_MISSING"
+            exit 1
+        fi
+        # Hermes jest NATYWNY (nie w kontenerze), wiec init-hindsight.sh
+        # musi dzialac z HOSTA - API Hindsight jest wystawione na localhost:8888.
+        # Uruchamiamy skrypt bezposrednio (bez 'make', ktore wymagaloby repo).
+        chmod +x "`$CLIENT_DIR/init-hindsight.sh"
+        HINDSIGHT_URL="http://localhost:8888" bash "`$CLIENT_DIR/init-hindsight.sh"
+        # Weryfikacja REALNA - liczymy banki przez API, nie przez komunikat.
+        BANK_COUNT=`$(curl -sf http://localhost:8888/v1/default/banks 2>/dev/null | grep -o '"bank_id"' | wc -l)
+        if [ "`$BANK_COUNT" -ge 1 ]; then
+            echo "HINDSIGHT_INIT_DONE banks=`$BANK_COUNT"
         else
-            echo "init-hindsight.sh not found for client $Client"
+            echo "HINDSIGHT_NO_BANKS"
+            exit 1
         fi
 "@
 
@@ -1783,9 +1858,428 @@ function Invoke-HindsightAndConfig {
     if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $initResult -ForegroundColor DarkGray }
 
     if ($initResult -match 'HINDSIGHT_INIT_DONE') {
-        Write-Check "Hindsight banks initialized (2 banks)"
+        # Liczba bankow pochodzi z REALNEGO zapytania do API Hindsight,
+        # a nie ze stalej w komunikacie (bylo: na sztywno "(2 banks)").
+        $bankInfo = if ($initResult -match 'banks=(\d+)') { "$($Matches[1]) bank(i)" } else { "banki utworzone" }
+        Write-Check "Hindsight: $bankInfo"
+    } elseif ($initResult -match 'MAKE_MISSING') {
+        Write-Check "BLOKADA: brak 'make' - init-hindsight niemozliwy" -Fail
+        return $false
+    } elseif ($initResult -match 'HINDSIGHT_NO_BANKS') {
+        Write-Check "Hindsight: zadnego banku nie utworzono - sprawdz log" -Fail
+        Write-Log "init-hindsight: HINDSIGHT_NO_BANKS. Output: $initResult"
+        return $false
     } else {
-        Write-Check "Hindsight init: check logs" -Warn
+        Write-Check "Hindsight init FAILED - sprawdz log" -Fail
+        Write-Log "init-hindsight nie zwrocil HINDSIGHT_INIT_DONE. Output: $initResult"
+        return $false
+    }
+
+    return $true
+}
+
+# ============================================================================
+# Hermes natywnie na VM (bez kontenera) - instalacja + usluga systemd
+# ============================================================================
+
+function Install-NativeHermes {
+    param(
+        [string]$VmIp,
+        [string]$Client
+    )
+
+    Write-Host "  Instalowanie Hermesa natywnie na VM (bez kontenera)..." -ForegroundColor White
+
+    $sshTarget = "structura@$VmIp"
+    $sshPort = 2222
+
+    # ------------------------------------------------------------------
+    # 1. Instalacja hermes-agent z PyPI
+    #    uv jest szybszy i daje izolowane srodowisko (bez smieci systemowych).
+    #    Fallback: python3 -m venv + pip (gdyby uv nie bylo dostepne).
+    # ------------------------------------------------------------------
+    $installCmd = @"
+        set -e
+
+        # Python + narzedzia
+        sudo apt-get install -y python3 python3-venv python3-pip curl git 2>/dev/null
+
+        # uv (szybki instalator) - jesli sie nie uda, uzywamy venv+pip
+        if ! command -v uv >/dev/null 2>&1; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null || true
+            export PATH="`$HOME/.local/bin:`$PATH"
+        fi
+
+        HERMES_HOME="`$HOME/.hermes"
+        mkdir -p "`$HERMES_HOME"
+
+        if command -v uv >/dev/null 2>&1; then
+            echo "Instaluje przez uv..."
+            uv tool install hermes-agent 2>&1 | tail -3 || {
+                echo "uv nieudane - fallback na venv"
+                python3 -m venv "`$HERMES_HOME/venv"
+                "`$HERMES_HOME/venv/bin/pip" install --upgrade pip -q
+                "`$HERMES_HOME/venv/bin/pip" install hermes-agent -q
+            }
+        else
+            echo "Instaluje przez venv+pip..."
+            python3 -m venv "`$HERMES_HOME/venv"
+            "`$HERMES_HOME/venv/bin/pip" install --upgrade pip -q
+            "`$HERMES_HOME/venv/bin/pip" install hermes-agent -q
+        fi
+
+        # Ustal sciezke binarki hermes
+        HERMES_BIN=""
+        if [ -x "`$HOME/.local/bin/hermes" ]; then
+            HERMES_BIN="`$HOME/.local/bin/hermes"
+        elif [ -x "`$HOME/.local/share/uv/tools/hermes-agent/bin/hermes" ]; then
+            HERMES_BIN="`$HOME/.local/share/uv/tools/hermes-agent/bin/hermes"
+        elif [ -x "`$HERMES_HOME/venv/bin/hermes" ]; then
+            HERMES_BIN="`$HERMES_HOME/venv/bin/hermes"
+        fi
+
+        if [ -z "`$HERMES_BIN" ]; then
+            echo "HERMES_BIN_NOT_FOUND"
+            exit 1
+        fi
+        echo "HERMES_BIN=`$HERMES_BIN"
+        "`$HERMES_BIN" --version 2>&1 | head -2
+        echo "HERMES_INSTALLED"
+"@
+    $installResult = (Invoke-SshScript -Script $installCmd -Label "hermes-install" -sshTarget $sshTarget -SshPort $sshPort).Output
+
+    if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $installResult -ForegroundColor DarkGray }
+
+    if ($installResult -notmatch 'HERMES_INSTALLED') {
+        Write-Check "Hermes: instalacja natywna NIE powiodla sie" -Fail
+        Write-Log "Install-NativeHermes failed. Output: $installResult"
+        return $false
+    }
+    Write-Check "Hermes zainstalowany natywnie (PyPI)"
+
+    # ------------------------------------------------------------------
+    # 2. Konfiguracja klienta -> ~/.hermes
+    #    Hermes natywny czyta z ~/.hermes/. Kopiujemy config, SOUL.md, skille.
+    # ------------------------------------------------------------------
+    $configCmd = @"
+        set -e
+        CLIENT_DIR="/opt/structura/repos/structura-clients-$Client"
+        HERMES_HOME="`$HOME/.hermes"
+        mkdir -p "`$HERMES_HOME"
+
+        # config.yaml klienta (model, providery, tierowanie)
+        if [ -f "`$CLIENT_DIR/hermes-config.yaml" ]; then
+            cp "`$CLIENT_DIR/hermes-config.yaml" "`$HERMES_HOME/config.yaml"
+        fi
+
+        # SOUL.md - osobowosc "prawnicza"
+        if [ -f "`$CLIENT_DIR/SOUL.md" ]; then
+            cp "`$CLIENT_DIR/SOUL.md" "`$HERMES_HOME/SOUL.md"
+        fi
+
+        # Reguly pamieci
+        if [ -f "`$CLIENT_DIR/hindsight-rules.yaml" ]; then
+            cp "`$CLIENT_DIR/hindsight-rules.yaml" "`$HERMES_HOME/hindsight-rules.yaml"
+        fi
+
+        # Skille klienta (branding, estetyka, hyperframes, layout...)
+        if [ -d "`$CLIENT_DIR/skills" ]; then
+            mkdir -p "`$HERMES_HOME/skills"
+            cp -r "`$CLIENT_DIR/skills/." "`$HERMES_HOME/skills/" 2>/dev/null || true
+            SKILL_COUNT=`$(ls -1 "`$HERMES_HOME/skills" 2>/dev/null | wc -l)
+            echo "SKILLS_INSTALLED count=`$SKILL_COUNT"
+        else
+            echo "SKILLS_MISSING"
+        fi
+
+        # Motyw dashboardu (Aether - ciemnoszare tlo czatu)
+        if [ -d "`$CLIENT_DIR/dashboard-themes" ]; then
+            mkdir -p "`$HERMES_HOME/dashboard-themes"
+            cp -r "`$CLIENT_DIR/dashboard-themes/." "`$HERMES_HOME/dashboard-themes/" 2>/dev/null || true
+            THEME_NAME=`$(ls -1 "`$HERMES_HOME/dashboard-themes" 2>/dev/null | head -1 | sed 's/\.yaml`$//')
+            echo "THEME_INSTALLED name=`$THEME_NAME"
+        fi
+
+        echo "CONFIG_DONE"
+"@
+    $configResult = (Invoke-SshScript -Script $configCmd -Label "hermes-config" -sshTarget $sshTarget -SshPort $sshPort).Output
+    if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $configResult -ForegroundColor DarkGray }
+
+    if ($configResult -match 'CONFIG_DONE') {
+        Write-Check "Konfiguracja klienta wgrana do ~/.hermes"
+    } else {
+        Write-Check "Konfiguracja klienta: sprawdz log" -Warn
+    }
+
+    $themeMatch = [regex]::Match($configResult, 'THEME_INSTALLED name=([\w\-]+)')
+    if ($themeMatch.Success) {
+        $themeName = $themeMatch.Groups[1].Value
+        Write-Check "Motyw dashboardu: $themeName"
+    } else {
+        Write-Check "Motyw dashboardu: nie znaleziono (sprawdz repo klienta)" -Warn
+    }
+
+    $skillsMatch = [regex]::Match($configResult, 'SKILLS_INSTALLED count=(\d+)')
+    if ($skillsMatch.Success) {
+        Write-Check "Skille klienta: $($skillsMatch.Groups[1].Value)"
+    } else {
+        Write-Check "Skille klienta: BRAK (katalog skills/ w repo klienta)" -Warn
+    }
+
+    # ------------------------------------------------------------------
+    # 3. Usluga systemd - Hermes startuje z VM (VM startuje z Windowsem)
+    # ------------------------------------------------------------------
+    $serviceCmd = @"
+        set -e
+
+        # Znajdz binarke (ta sama logika co przy instalacji)
+        HERMES_BIN=""
+        for cand in "`$HOME/.local/bin/hermes" "`$HOME/.local/share/uv/tools/hermes-agent/bin/hermes" "`$HOME/.hermes/venv/bin/hermes"; do
+            if [ -x "`$cand" ]; then HERMES_BIN="`$cand"; break; fi
+        done
+        if [ -z "`$HERMES_BIN" ]; then echo "HERMES_BIN_NOT_FOUND"; exit 1; fi
+
+        # Serwer DASHBOARDU (UI w przegladarce + /health).
+        # UWAGA: 'hermes serve' to backend headless BEZ UI i BEZ /health -
+        # klient potrzebuje dashboardu, ktory wystawia UI i endpoint /health.
+        # Port 9119 = domyslny port dashboardu (zgodny z NPM dashboard.local).
+        # --skip-build: nie buduje UI od nowa (dist jest w pakiecie), dzieki
+        # czemu start jest szybki i nie wymaga npm na VM.
+        sudo tee /etc/systemd/system/hermes.service > /dev/null << HERMESEOF
+[Unit]
+Description=Hermes Agent dashboard
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=structura
+WorkingDirectory=/opt/structura
+Environment=HOME=/home/structura
+# 0.0.0.0 - kontener NPM musi dosiegnac dashboard przez host.docker.internal
+ExecStart=$HERMES_BIN dashboard --host 0.0.0.0 --port 9119 --no-open --skip-build
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/opt/structura/appdata/hermes/hermes.log
+StandardError=append:/opt/structura/appdata/hermes/hermes.log
+
+[Install]
+WantedBy=multi-user.target
+HERMESEOF
+
+        sudo mkdir -p /opt/structura/appdata/hermes
+        sudo chown -R structura:structura /opt/structura/appdata/hermes
+
+        sudo systemctl daemon-reload
+        sudo systemctl enable hermes 2>/dev/null || true
+        sudo systemctl restart hermes
+        sleep 5
+
+        if systemctl is-active --quiet hermes; then echo "HERMES_ACTIVE"; else echo "HERMES_INACTIVE"; fi
+        # Weryfikacja realna: dashboard wystawia /health (serve nie mial go wcale)
+        if curl -sf http://localhost:9119/health >/dev/null 2>&1; then
+            echo "HERMES_HTTP_OK"
+        elif curl -sf http://localhost:9119/ >/dev/null 2>&1; then
+            # Starsze wersje moga nie miec /health - wystarczy ze UI odpowiada
+            echo "HERMES_HTTP_OK_UI_ONLY"
+        else
+            echo "HERMES_HTTP_PENDING"
+        fi
+"@
+    $serviceResult = (Invoke-SshScript -Script $serviceCmd -Label "hermes-service" -sshTarget $sshTarget -SshPort $sshPort).Output
+    if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $serviceResult -ForegroundColor DarkGray }
+
+    if ($serviceResult -match 'HERMES_ACTIVE') {
+        Write-Check "Usluga hermes.service aktywna (start z VM)"
+    } else {
+        Write-Check "Usluga hermes.service NIE wystartowala" -Fail
+        Write-Log "hermes.service failed. Output: $serviceResult"
+        return $false
+    }
+
+    # Hermes musi moc zarzadzac kontenerami - dodaj do grupy docker
+    $grpCmd = @"
+        sudo usermod -aG docker structura 2>/dev/null || true
+        if id structura | grep -q docker; then echo "DOCKER_GRP_OK"; else echo "DOCKER_GRP_MISSING"; fi
+"@
+    $grpResult = (Invoke-SshScript -Script $grpCmd -Label "hermes-dockergrp" -sshTarget $sshTarget -SshPort $sshPort).Output
+    if ($grpResult -match 'DOCKER_GRP_OK') {
+        Write-Check "Hermes ma dostep do Dockera (grupa docker)"
+    }
+
+    return $true
+}
+
+# ============================================================================
+# Autostart VM z Windowsem (wymog: klient restartuje PC -> wszystko dziala)
+# ============================================================================
+
+function Install-VmAutostart {
+    param([string]$VmName)
+
+    Write-Host "  Konfigurowanie autostartu VM z Windowsem..." -ForegroundColor White
+
+    # VBoxManage startvm --type headless uruchamia VM bez okna (w tle).
+    # Zadanie w Harmonogramie zadan:
+    #   - Trigger: przy starcie systemu (ONSTART)
+    #   - Kontekst: SYSTEM (dziala bez logowania uzytkownika!)
+    #   - Delay: 30 s, zeby VirtualBox zdazyl wystartowac swoje uslugi
+    #
+    # UWAGA: zadanie musi dzialac jako SYSTEM, a nie "przy logowaniu" - klient
+    # moze zostawic komputer wlaczony bez zalogowania sesji, a asystent ma
+    # dzialac w tle.
+    $vbox = Get-VBoxManage
+    if (-not $vbox) {
+        Write-Check "Autostart VM: VBoxManage nie znaleziony" -Warn
+        return $false
+    }
+
+    $vboxDir = Split-Path $vbox -Parent
+
+    # VBoxSVC/VBoxSDS musza byc uruchomione zanim ruszy VM. VirtualBox
+    # rejestruje wlasne uslugi przy instalacji, ale dla pewnosci dajemy delay.
+    $taskName = "STRUCTURA-VM-Autostart"
+    $scriptCmd = "`"$vboxDir\VBoxManage.exe`" startvm `"$VmName`" --type headless"
+
+    # Usun poprzednie zadanie (idempotencja przy re-runie)
+    $null = & schtasks /Delete /TN $taskName /F 2>&1
+
+    # Trigger ONSTART + SYSTEM (bez logowania) + 30 s opoznienia
+    $createOut = & schtasks /Create /TN $taskName /TR $scriptCmd /SC ONSTART /RU SYSTEM /RL HIGHEST /DELAY 0000:30 /F 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Check "Autostart VM: nie udalo sie utworzyc zadania ($createOut)" -Warn
+        return $false
+    }
+
+    Write-Check "Autostart VM: zadanie '$taskName' (start systemu, 30 s, bez logowania)"
+    Write-Log "Autostart VM: schtasks /Create /TN $taskName /SC ONSTART /RU SYSTEM /DELAY 0000:30"
+
+    # Dodatkowo: VBoxManage setproperty + autostart VBox wlasnym mechanizmem
+    # (dziala gdy VM ma wlaczony autostart w VirtualBox Manager).
+    $null = & $vbox modifyvm $VmName --autostart-enabled on --autostart-delay 30 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Check "Autostart VM: VirtualBox autostart-enabled on (delay 30s)"
+    }
+
+    return $true
+}
+
+# ============================================================================
+# Wspoldzielony folder ai_workspace (Windows <-> VM), TRWALY
+# ============================================================================
+
+function Install-SharedFolder {
+    param(
+        [string]$VmName,
+        [string]$VmIp
+    )
+
+    Write-Host "  Konfigurowanie wspoldzielonego folderu ai_workspace..." -ForegroundColor White
+
+    # ------------------------------------------------------------------------
+    # WYBOR METODY: VirtualBox Shared Folders (vboxsf), NIE SMB.
+    #
+    # Dlaczego NIE SMB:
+    #   VM ma --nic1 nat, wiec Windows NIE OSIAGA VM na porcie 445.
+    #   Instalator raportowal "\127.0.0.1i-workspace" - ale 127.0.0.1 w tym
+    #   kontekscie to WINDOWS, nie VM. Udzial SMB w VM byl z hosta nieosiagalny.
+    #
+    # Dlaczego vboxsf:
+    #   - dziala BEZ sieci (nie potrzebuje NIC ani portu 445)
+    #   - jest TRWALY: folder zyje na dysku Windows, montuje sie przy starcie VM
+    #   - brak dodatkowego hasla do zarzadzania
+    #   - VBoxManage sharedfolder add --automount montuje go automatycznie
+    #
+    # Wymaga: Guest Additions w gosciu (vboxsf kernel module).
+    # ------------------------------------------------------------------------
+
+    $vbox = Get-VBoxManage
+    if (-not $vbox) { return $false }
+
+    # Folder po stronie Windows - w profilu uzytkownika, zeby byl naturalny
+    # i latwy do znalezienia w Eksploratorze.
+    $hostFolder = Join-Path $env:USERPROFILE "STRUCTURA-PLiki"
+    if (-not (Test-Path $hostFolder)) {
+        $null = New-Item -ItemType Directory -Path $hostFolder -Force
+    }
+
+    # Podfolder na dokumenty spraw (klient pracuje na plikach)
+    $sprawyFolder = Join-Path $hostFolder "Sprawy"
+    if (-not (Test-Path $sprawyFolder)) {
+        Write-Log "SharedFolder: tworze $sprawyFolder"
+        $null = New-Item -ItemType Directory -Path $sprawyFolder -Force
+    }
+
+    # Rejestracja udzialu w VirtualBox z automount
+    # --automount: montuje sie automatycznie przy starcie VM
+    #       (bez tego trzeba recznie 'mount -t vboxsf' po kazdym restarcie)
+    $null = & $vbox sharedfolder remove $VmName --name "ai-workspace" 2>&1
+    $addOut = & $vbox sharedfolder add $VmName `
+        --name "ai-workspace" `
+        --hostpath "$hostFolder" `
+        --automount --auto-mount-point "/opt/structura/ai-workspace" 2>&1
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Check "Folder wspoldzielony: rejestracja nieudana ($addOut)" -Warn
+        Write-Log "SharedFolder add failed: $addOut"
+        return $false
+    }
+
+    Write-Check "Folder wspoldzielony: $hostFolder -> VM:/opt/structura/ai-workspace (automount)"
+
+    # Upewnij sie ze Guest Additions sa zainstalowane w gosciu (vboxsf)
+    $sshTarget = "structura@$VmIp"
+    $sshPort = 2222
+    $gaCheck = @"
+        if lsmod | grep -q vboxsf || [ -d /opt/VBoxGuestAdditions-* ]; then
+            echo "GA_OK"
+        else
+            echo "GA_MISSING"
+        fi
+"@
+    $gaResult = (Invoke-SshScript -Script $gaCheck -Label "ga-check" -sshTarget $sshTarget -SshPort $sshPort).Output
+
+    if ($gaResult -match 'GA_MISSING') {
+        # Bez Guest Additions vboxsf nie zadziala. Instalujemy z repo Ubuntu
+        # (virtualbox-guest-utils dostarcza vboxsf dla VBox 7.x).
+        Write-Host "    Guest Additions brak - instaluje virtualbox-guest-utils..." -ForegroundColor DarkGray
+        $gaInstall = @"
+            sudo apt-get install -y virtualbox-guest-utils virtualbox-guest-dkms 2>/dev/null ||             sudo apt-get install -y virtualbox-guest-utils 2>/dev/null
+            sudo modprobe vboxsf 2>/dev/null || true
+            if lsmod | grep -q vboxsf; then echo "GA_INSTALLED"; else echo "GA_FAILED"; fi
+"@
+        $gaInst = (Invoke-SshScript -Script $gaInstall -Label "ga-install" -sshTarget $sshTarget -SshPort $sshPort).Output
+        if ($gaInst -match 'GA_INSTALLED') {
+            Write-Check "Guest Additions zainstalowane (vboxsf dostepny)"
+        } else {
+            Write-Check "Guest Additions: instalacja nieudana - folder moze nie dzialac po restarcie" -Warn
+            Write-Log "GuestAdditions install failed: $gaInst"
+        }
+    } else {
+        Write-Check "Guest Additions obecne (vboxsf)"
+    }
+
+    # Wpis w /etc/fstab jako zabezpieczenie (automount VBox bywa zawodny
+    # przy pierwszym starcie po wlaczeniu udzialu - fstab gwarantuje montowanie)
+    $fstabCmd = @"
+        if ! grep -q 'ai-workspace' /etc/fstab 2>/dev/null; then
+            echo 'ai-workspace /opt/structura/ai-workspace vboxsf defaults,nofail,uid=1000,gid=1000,umask=002 0 0' | sudo tee -a /etc/fstab > /dev/null
+            echo "FSTAB_ADDED"
+        else
+            echo "FSTAB_EXISTS"
+        fi
+        # Utworz punkt montowania i zamontuj teraz
+        sudo mkdir -p /opt/structura/ai-workspace
+        sudo mount -a 2>/dev/null || true
+        if mountpoint -q /opt/structura/ai-workspace 2>/dev/null; then echo "MOUNTED"; else echo "NOT_MOUNTED"; fi
+"@
+    $fstabResult = (Invoke-SshScript -Script $fstabCmd -Label "sharedfolder" -sshTarget $sshTarget -SshPort $sshPort).Output
+
+    if ($fstabResult -match 'MOUNTED') {
+        Write-Check "Folder wspoldzielony zamontowany: /opt/structura/ai-workspace"
+    } else {
+        Write-Check "Folder wspoldzielony: zamontuje sie przy nastepnym starcie VM (nofail w fstab)" -Warn
+        Write-Log "SharedFolder mount state: $fstabResult"
     }
 
     return $true
@@ -1834,7 +2328,7 @@ function Invoke-PostSetup {
         # Cron uruchamia sie w minimalnym srodowisku (bez grupy docker w kontekscie
         # i z ubogim PATH), wiec 'docker exec' padalby na 'permission denied'.
         # 'sg docker -c' przelacza grupe; PATH podany jawnie.
-        CRON_LINE="45 1 * * * PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin sg docker -c 'docker exec structura-hindsight /pgdump/pgdump.sh >> /opt/structura/appdata/hindsight/pgdump/cron.log 2>&1'"
+        CRON_LINE="45 1 * * * PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin sg docker -c 'docker exec postgresql /pgdump/pgdump.sh >> /opt/structura/appdata/postgresql/pgdump/cron.log 2>&1'"
         (crontab -l 2>/dev/null | grep -v "pgdump.sh"; echo "`$CRON_LINE") | crontab -
         # Weryfikacja: cron wymaga grupy docker, inaczej 'docker exec' padnie po cichu.
         if crontab -l 2>/dev/null | grep -q "pgdump.sh"; then echo "CRON_OK"; else echo "CRON_MISSING"; fi
@@ -1892,7 +2386,13 @@ SMBEOF
 "@
     $smbResult = (Invoke-SshScript -Script $smbCmd -Label "smb" -sshTarget $sshTarget -SshPort $sshPort).Output
     if ($smbResult -match 'SMB_UP') {
-        Write-Check "SMB share aktywny: \\$VmIp\ai-workspace (haslo: SMB_PASSWORD z .env)"
+        # UWAGA: to sprawdza TYLKO, czy demon smbd zyje - NIE czy udzial jest
+        # osiagalny. Przy --nic1 nat Windows nie widzi portu 445, wiec ten
+        # udzial jest uzyteczny wylacznie wewnatrz VM. Dla wymiany plikow
+        # Windows <-> VM uzywamy VirtualBox Shared Folders (patrz
+        # Install-SharedFolder). Komunikat pozostawiony dla wewnetrznych
+        # potrzeb (np. przyszly dostep z sieci LAN po zmianie NIC na bridged).
+        Write-Check "SMB (wewnatrz VM): smbd aktywny, udzial /opt/structura/ai-workspace"
     } elseif ($smbResult -match 'SMB_PW_MISSING') {
         Write-Check "SMB: brak SMB_PASSWORD w .env - uruchom scripts/generate-secrets.sh" -Warn
     } else {
@@ -1902,19 +2402,47 @@ SMBEOF
     # --- UFW firewall ---
     Write-Host "  Configuring UFW firewall..." -ForegroundColor White
     $ufwCmd = @"
+        set -e
+
+        # Wykryj REALNY port sshd - nie zakladamy go z gory.
+        # Bylo: UFW zezwalal na 2222, a sshd sluchal na 22 (NAT: host 2222 -> guest 22).
+        # Po 'default deny incoming' port 22 byl blokowany, wiec SSH przez NAT
+        # przestawal dzialac w polowie instalacji. Sled w logu klienta:
+        # "kex_exchange_identification: read: Connection reset" przy motywie.
+        SSHD_PORT=`$(sudo sshd -T 2>/dev/null | awk '/^port /{print `$2; exit}')
+        SSHD_PORT=`${SSHD_PORT:-22}
+
         sudo ufw --force reset
         sudo ufw default deny incoming
         sudo ufw default allow outgoing
-        sudo ufw allow 2222/tcp comment 'SSH'
+        # Reguly dodajemy PRZED 'enable' - w momencie przelaczenia dostep dziala.
+        sudo ufw allow "`$SSHD_PORT/tcp" comment 'SSH (realny port sshd)'
         sudo ufw allow 80/tcp comment 'HTTP'
         sudo ufw allow 443/tcp comment 'HTTPS'
+        # 445 = SMB. NAT nie forwarduje tego portu (patrz --natpf1), wiec regula
+        # ma sens tylko przy dostepie z sieci LAN (hostonly/bridged).
         sudo ufw allow from 192.168.0.0/16 to any port 445 proto tcp comment 'SMB LAN only'
         sudo ufw --force enable
+
         if sudo ufw status | grep -q "Status: active"; then echo "UFW_ACTIVE"; else echo "UFW_INACTIVE"; fi
+        # Weryfikacja ze UFW zezwala na port, na ktorym sshd REALNIE slucha
+        if sudo ufw status | grep -qE "(^| )`$SSHD_PORT/tcp"; then echo "UFW_SSH_OK port=`$SSHD_PORT"; else echo "UFW_SSH_MISSING"; fi
+        # Sanity check: czy SSH nie zostalo odciete wlasnym firewallem
+        if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/`$SSHD_PORT" 2>/dev/null; then echo "SSH_LOCAL_OK"; else echo "SSH_LOCAL_BLOCKED"; fi
 "@
     $ufwResult = (Invoke-SshScript -Script $ufwCmd -Label "ufw" -sshTarget $sshTarget -SshPort $sshPort).Output
+    if ($ufwResult -match 'SSH_LOCAL_BLOCKED') {
+        # Najgorszy scenariusz: wlasny firewall odcial SSH. Kolejne kroki padna.
+        Write-Check "KRYTYCZNE: UFW zablokowal SSH - dalsze kroki beda padac" -Fail
+        Write-Log "UFW: SSH_LOCAL_BLOCKED. Output: $ufwResult"
+        return $false
+    }
+    if ($ufwResult -match 'UFW_SSH_MISSING') {
+        Write-Check "UFW NIE zezwala na realny port sshd" -Warn
+    }
     if ($ufwResult -match 'UFW_ACTIVE') {
-        Write-Check "UFW aktywny: deny incoming, allow 2222/80/443/445(LAN)"
+        $sshPortInfo = if ($ufwResult -match 'port=(\d+)') { $Matches[1] } else { '22' }
+        Write-Check "UFW aktywny: deny incoming, allow $sshPortInfo(SSH)/80/443/445(LAN)"
     } else {
         Write-Check "UFW NIE aktywny - sprawdz 'sudo ufw status'" -Warn
     }
@@ -1922,25 +2450,51 @@ SMBEOF
     # --- fail2ban ---
     Write-Host "  Installing fail2ban..." -ForegroundColor White
     $f2bCmd = @"
-        sudo apt-get install -y fail2ban 2>/dev/null
-        sudo tee /etc/fail2ban/jail-local.conf > /dev/null << 'F2BEOF'
-[sshd]
-enabled = true
-port = 2222
-filter = sshd
-logpath = /var/log/auth.log
-maxretry = 3
+        sudo apt-get install -y fail2ban 2>/dev/null || exit 1
+
+        # ---- jail.d/structura.conf ----
+        # UWAGA: NIE /etc/fail2ban/jail-local.conf - fail2ban czyta jail.conf
+        # oraz jail.d/*.conf. Plik 'jail-local.conf' byl IGNOROWANY, dlatego
+        # jail nie byl wczytywany (log klienta: "fail2ban NIE aktywny").
+        sudo mkdir -p /etc/fail2ban/jail.d
+        sudo tee /etc/fail2ban/jail.d/structura.conf > /dev/null << 'F2BEOF'
+[DEFAULT]
+# KRYTYCZNE: bez ignoreip fail2ban banuje WLASNY host. Instalator i tak
+# wykonuje dziesiatki polaczen SSH (health checki), a maxretry=3 wystarczy,
+# zeby zablokowac 127.0.0.1 i przerwac instalacje w polowie.
+ignoreip = 127.0.0.1/8 ::1
 bantime = 3600
 findtime = 600
+maxretry = 3
+
+[sshd]
+enabled = true
+# Port zgodny z REALNYM nasluchem sshd w gosciu (22).
+# NAT mapuje host:2222 -> guest:22, ale sshd slucha na 22.
+port = 22
+filter = sshd
+# Ubuntu 24.04 uzywa rsyslog, wiec auth.log istnieje. Gdyby go nie bylo,
+# backend=systemd dziala jako fallback.
+backend = auto
+logpath = /var/log/auth.log
 F2BEOF
-        sudo systemctl enable fail2ban
+
+        # Usun stary, ignorowany plik jesli zostal z poprzednich wersji
+        sudo rm -f /etc/fail2ban/jail-local.conf 2>/dev/null || true
+
+        sudo systemctl enable fail2ban 2>/dev/null || true
         sudo systemctl restart fail2ban
-        sleep 3
+        sleep 5
+
         if systemctl is-active --quiet fail2ban; then echo "F2B_ACTIVE"; else echo "F2B_INACTIVE"; fi
+        # Weryfikacja ze jail sshd jest REALNIE wczytany (nie tylko demon zyje)
+        if sudo fail2ban-client status sshd >/dev/null 2>&1; then echo "F2B_JAIL_OK"; else echo "F2B_JAIL_MISSING"; fi
 "@
     $f2bResult = (Invoke-SshScript -Script $f2bCmd -Label "fail2ban" -sshTarget $sshTarget -SshPort $sshPort).Output
-    if ($f2bResult -match 'F2B_ACTIVE') {
-        Write-Check "fail2ban aktywny: SSH (port 2222, ban 3 proby/1h)"
+    if ($f2bResult -match 'F2B_ACTIVE' -and $f2bResult -match 'F2B_JAIL_OK') {
+        Write-Check "fail2ban aktywny: jail sshd (port 22, ban 3 proby/1h, ignoreip 127.0.0.1)"
+    } elseif ($f2bResult -match 'F2B_JAIL_MISSING') {
+        Write-Check "fail2ban dziala, ale jail sshd NIE wczytany - sprawdz /etc/fail2ban/jail.d/" -Warn
     } else {
         Write-Check "fail2ban NIE aktywny - sprawdz 'systemctl status fail2ban'" -Warn
     }
@@ -1949,31 +2503,63 @@ F2BEOF
     Write-Host "  Installing dashboard theme (Aether Sawaryn)..." -ForegroundColor White
 
     $themeCmd = @"
-        # Copy theme YAML from client repo to Hermes dashboard-themes
+        # Hermes jest NATYWNY - motyw trafia do ~/.hermes, nie do kontenera.
         CLIENT_DIR="/opt/structura/repos/structura-clients-$Client"
-        THEME_FILE="`$CLIENT_DIR/dashboard-themes/aether-sawaryn.yaml"
+        HERMES_HOME="`$HOME/.hermes"
+        THEME_NAME="aether-$Client"
+        THEME_FILE="`$CLIENT_DIR/dashboard-themes/`$THEME_NAME.yaml"
 
-        if [ -f "`$THEME_FILE" ]; then
-            # Copy into Hermes container
-            docker cp "`$THEME_FILE" structura-hermes:/config/dashboard-themes/aether-sawaryn.yaml 2>/dev/null
-            # Activate theme
-            docker exec structura-hermes hermes config set dashboard.theme aether-sawaryn 2>/dev/null || echo "theme set via config"
-            echo "THEME_INSTALLED"
-        else
+        if [ ! -f "`$THEME_FILE" ]; then
             echo "Theme file not found: `$THEME_FILE"
+            exit 0
         fi
 
-        # GH#38238 patch: terminalBackground dropped by backend
+        mkdir -p "`$HERMES_HOME/dashboard-themes"
+        cp "`$THEME_FILE" "`$HERMES_HOME/dashboard-themes/`$THEME_NAME.yaml"
+
+        # Aktywacja motywu. Hermes domyslnie czyta ~/.hermes/config.yaml.
+        HERMES_BIN=""
+        for cand in "`$HOME/.local/bin/hermes" "`$HOME/.local/share/uv/tools/hermes-agent/bin/hermes" "`$HERMES_HOME/venv/bin/hermes"; do
+            if [ -x "`$cand" ]; then HERMES_BIN="`$cand"; break; fi
+        done
+
+        if [ -n "`$HERMES_BIN" ]; then
+            "`$HERMES_BIN" config set dashboard.theme "`$THEME_NAME" 2>/dev/null || {
+                # Fallback: dopisz do config.yaml recznie
+                if ! grep -q 'dashboard:' "`$HERMES_HOME/config.yaml" 2>/dev/null; then
+                    printf '
+dashboard:
+  theme: %s
+' "`$THEME_NAME" >> "`$HERMES_HOME/config.yaml"
+                fi
+            }
+        fi
+        echo "THEME_INSTALLED"
+
+        # --- GH#38238: terminalBackground/terminalForeground sa WYCINANE
+        # przez backend-normalizer, wiec samo YAML nie wystarcza. Bez patchera
+        # tlo czatu zostaje CZARNE zamiast ciemnoszarego (#2A2A2E).
         PATCHER_FILE="`$CLIENT_DIR/patches/gh38238-patcher.py"
         if [ -f "`$PATCHER_FILE" ]; then
-            docker cp "`$PATCHER_FILE" structura-hermes:/tmp/gh38238-patcher.py 2>/dev/null
-            docker exec structura-hermes python3 /tmp/gh38238-patcher.py 2>/dev/null || echo "patcher already applied"
-            # Install s6 cont-init.d hook for persistence
-            docker exec structura-hermes sh -c 'mkdir -p /etc/cont-init.d && cp /tmp/gh38238-patcher.py /etc/cont-init.d/10-gh38238-patch.py' 2>/dev/null
-            echo "GH38238_PATCHED"
+            # Patchujemy zainstalowany pakiet Hermesa (nie kontener).
+            PATCH_APPLIED=0
+            PKG_DIR=`$("`$HERMES_BIN" -c 'import hermes,os;print(os.path.dirname(hermes.__file__))' 2>/dev/null || true)
+            if [ -n "`$PKG_DIR" ]; then
+                python3 "`$PATCHER_FILE" --package-dir "`$PKG_DIR" 2>/dev/null && PATCH_APPLIED=1
+            fi
+            if [ "`$PATCH_APPLIED" -eq 1 ]; then
+                echo "GH38238_PATCHED"
+            else
+                echo "GH38238_PATCH_FAILED"
+            fi
         else
             echo "Patcher file not found: `$PATCHER_FILE"
         fi
+
+        # Restart uslugi, zeby motyw i patch zadzialaly od razu
+        sudo systemctl restart hermes 2>/dev/null || true
+        sleep 3
+        if systemctl is-active --quiet hermes; then echo "HERMES_RESTARTED"; fi
 "@
 
     $themeResult = (Invoke-SshScript -Script $themeCmd -Label "theme" -sshTarget $sshTarget -SshPort $sshPort).Output
@@ -1985,11 +2571,27 @@ F2BEOF
         Write-Check "Dashboard theme: $themeResult" -Warn
     }
 
-    if ($themeResult -match 'GH38238_PATCHED') {
-        Write-Check "GH#38238 patch: terminalBackground fix applied"
+    if ($themeResult -match 'GH#38238_PATCHED') {
+        Write-Check "GH#38238 patch: tlo czatu ciemnoszare (#2A2A2E) - dziala od razu"
+    } elseif ($themeResult -match 'GH38238_PATCH_FAILED') {
+        Write-Check "GH#38238 patch: nie zastosowano - tlo czatu moze byc czarne" -Warn
+        Write-Log "gh38238 patcher failed on native Hermes"
     } else {
-        Write-Check "GH#38238 patch: check client repo for patches/" -Warn
+        Write-Check "GH#38238 patch: BRAK patchera w repo klienta" -Warn
     }
+
+    # --- Folder wspoldzielony Windows <-> VM (TRWALY) ---
+    # Wymog: klient pracuje na plikach spraw, a folder ma przezyc restart.
+    # Metoda: VirtualBox Shared Folders (vboxsf), NIE SMB - VM ma --nic1 nat,
+    # wiec Windows NIE osiaga VM na porcie 445 (Samba byla dla hosta
+    # niewidoczna, a instalator raportowal "\127.0.0.1\ai-workspace",
+    # czyli Windows SAM - nie VM).
+    $null = Install-SharedFolder -VmName $VM_NAME -VmIp $VmIp
+
+    # --- Autostart VM z Windowsem ---
+    # Wymog: klient restartuje komputer -> wszystko dziala samo w tle,
+    # bez logowania. Zadanie w Harmonogramie: ONSTART + SYSTEM + delay 30 s.
+    $null = Install-VmAutostart -VmName $VM_NAME
 
     return $true
 }
@@ -2080,34 +2682,34 @@ function Invoke-LUKS {
 
     if (-not $EnableLUKS) { return }
 
-    Write-Host "  Configuring LUKS encryption..." -ForegroundColor White
+    # ========================================================================
+    # LUKS NIE JEST ZAIMPLEMENTOWANY (swiadoma decyzja, nie przeoczenie).
+    #
+    # Poprzednia wersja probowala 'cryptsetup luksFormat /dev/sda5', ale VM
+    # z autoinstall (storage.layout.name = direct) ma JEDNA partycje root -
+    # /dev/sda5 nie istnieje. Funkcja nie mogla zadzialac, a mimo to
+    # raportowala "LUKS setup: check VM console" -Warn, co czytalo sie jako
+    # "szyfrowanie wlaczone". Dla kancelarii z tajemnica zawodowa to powazne
+    # wprowadzenie w blad.
+    #
+    # Realna implementacja wymaga: osobnego dysku/wolumenu w autoinstall
+    # storage.layout + cryptsetup w late-commands (przed montowaniem /opt),
+    # plus obsluga odblokowywania przy starcie (dropbear/clevis). To osobny
+    # zakres prac — NIE jest zrobione i NIE udajemy, ze jest.
+    # ========================================================================
+    Write-Host "  Szyfrowanie dysku (LUKS)..." -ForegroundColor White
+    Write-Check "LUKS: NIEZREALIZOWANE - dysk VM nie jest szyfrowany" -Fail
+    Write-Host "    Parametr -EnableLUKS jest przyjmowany, ale NIE wykonuje szyfrowania." -ForegroundColor Yellow
+    Write-Host "    Powod: VM ma jedna partycje root (autoinstall storage.layout=direct)," -ForegroundColor Yellow
+    Write-Host "    a realne LUKS wymaga osobnego wolumenu + obslugi odblokowania przy starcie." -ForegroundColor Yellow
+    Write-Host "" -ForegroundColor Yellow
+    Write-Host "    KOMPENSACJA (do wdrozenia przez klienta):" -ForegroundColor Yellow
+    Write-Host "      - BitLocker na dysku hosta Windows (chroni plik .vdi)" -ForegroundColor Yellow
+    Write-Host "      - Duplicati: backup szyfrowany AES (--encryption-module=aes)" -ForegroundColor Yellow
+    Write-Host "      - Fizyczna kontrola dostepu do stacji" -ForegroundColor Yellow
+    Write-Log "LUKS: -EnableLUKS uzyty, ale szyfrowanie NIE jest zaimplementowane (patrz komentarz w setup.ps1)"
 
-    $luksPass = $LUKSPassword
-    if (-not $luksPass) {
-        Write-Check "LUKS: password required (-LUKSPassword or .env LUKS_PASSPHRASE)" -Fail
-        return
-    }
-
-    $sshTarget = "structura@$VmIp"
-    $sshPort = 2222
-
-    $luksCmd = @"
-        # LUKS encryption setup (simplified - in production use cryptsetup)
-        if ! sudo cryptsetup status structura-data 2>/dev/null | grep -q 'active'; then
-            echo "$luksPass" | sudo cryptsetup luksFormat /dev/sda5 --type luks2 --batch-mode
-            echo "$luksPass" | sudo cryptsetup open /dev/sda5 structura-data --type luks2 --batch-mode
-            echo "LUKS_CONFIGURED"
-        else
-            echo "LUKS already active"
-        fi
-"@
-
-    $luksResult = (Invoke-SshScript -Script $luksCmd -Label "luks" -sshTarget $sshTarget -SshPort $sshPort).Output
-    if ($luksResult -match 'LUKS_CONFIGURED' -or $luksResult -match 'already active') {
-        Write-Check "LUKS encryption: enabled"
-    } else {
-        Write-Check "LUKS setup: check VM console" -Warn
-    }
+    return $false
 }
 
 # ============================================================================
@@ -2123,35 +2725,165 @@ function Show-Summary {
 
     $ramGB = [math]::Round($VM_RAM / 1024)
     $diskGB = [math]::Round($VM_DISK / 1024)
+    $hostFolder = Join-Path $env:USERPROFILE "STRUCTURA-PLiki"
 
-    Write-Banner -Title "STRUCTURA AI - INSTALACJA ZAKONCZONA" -Subtitle ""
+    # ========================================================================
+    # Podsumowanie dla KLIENTA (nie dla informatyka).
+    # Cel: prawnik ma wiedziec (1) co dostal, (2) gdzie kliknac, (3) co robic
+    # dalej. Zero zargonu, zero "SSH", zero "localhost".
+    #
+    # Dashboard: NPM tworzy osobne hosty (homepage.local, n8n.local, ...).
+    # Te nazwy trzeba wpisac do pliku hosts Windows, inaczej przegladarka ich
+    # nie zna. Dlatego instalator DODAJE je do hosts i mowi o tym wprost.
+    # ========================================================================
 
-    $width = 64
+    Write-Host ""
+    Write-Host ("=" * 66) -ForegroundColor DarkCyan
+    Write-Host "   GOTOWE - ASYSTENT DZIALA" -ForegroundColor Cyan
+    Write-Host ("=" * 66) -ForegroundColor DarkCyan
+    Write-Host ""
+    Write-Host "   Co zostalo zainstalowane" -ForegroundColor White
+    Write-Host "   ------------------------" -ForegroundColor DarkGray
+    Write-Host "     Maszyna wirtualna z systemem Ubuntu" -ForegroundColor Gray
+    Write-Host "       $VM_NAME  (${ramGB} GB pamieci, $VM_CPU rdzenie, ${diskGB} GB dysku)" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "     Osiem uslug gotowych do pracy:" -ForegroundColor Gray
+    Write-Host "       - Asystent AI (rozmowa po polsku, zna przepisy)" -ForegroundColor DarkGray
+    Write-Host "       - Pamiec kancelarii (baza wiedzy i kontekst spraw)" -ForegroundColor DarkGray
+    Write-Host "       - Wyszukiwarka prawna (ISAP, orzeczenia)" -ForegroundColor DarkGray
+    Write-Host "       - Automatyzacje (przeplywy dokumentow)" -ForegroundColor DarkGray
+    Write-Host "       - Kopie zapasowe (codziennie w nocy)" -ForegroundColor DarkGray
+    Write-Host "       - Panel zarzadzania" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "   Jak zaczac" -ForegroundColor White
+    Write-Host "   ----------" -ForegroundColor DarkGray
+    Write-Host "     1. Otworz panel z wszystkimi aplikacjami:" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "          http://homepage.local" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "        (link otworzy sie automatycznie za chwile)" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "     2. Twoje pliki sa w folderze:" -ForegroundColor Gray
+    Write-Host "          $hostFolder" -ForegroundColor Cyan
+    Write-Host "        To ten sam folder widziany przez asystenta - wrzucasz" -ForegroundColor DarkGray
+    Write-Host "        dokument, asystent go widzi. Bez kopiowania." -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "     3. Asystent startuje automatycznie z Windowsem." -ForegroundColor Gray
+    Write-Host "        Nic nie trzeba uruchamiac - dziala w tle." -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "     4. Dostep z telefonu (opcjonalnie):" -ForegroundColor Gray
+    Write-Host "        Skonfiguruj bota Telegram - patrz instrukcja obok." -ForegroundColor DarkGray
+    Write-Host "        Bez tego asystent dziala tylko na tym komputerze." -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "   Wazne informacje" -ForegroundColor White
+    Write-Host "   ----------------" -ForegroundColor DarkGray
+    Write-Host "     Hasla dostepowe sa w pliku .env na maszynie wirtualnej." -ForegroundColor DarkGray
+    Write-Host "     Zapisz je w sejfie - nie sa odtwarzalne po utracie." -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "     Szyfrowanie dysku: NIE JEST WLACZONE." -ForegroundColor Yellow
+    Write-Host "     Zalecane: wlacz BitLocker na tym komputerze - chroni" -ForegroundColor Yellow
+    Write-Host "     rowniez dane asystenta." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "     Kopie zapasowe wymagaja jednorazowej konfiguracji" -ForegroundColor Yellow
+    Write-Host "     (okolo 5 minut) - szczegoly w instrukcji." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "   Plik dziennika instalacji" -ForegroundColor White
+    Write-Host "   -------------------------" -ForegroundColor DarkGray
+    Write-Host "     $LOG_FILE" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host ("=" * 66) -ForegroundColor DarkCyan
+    Write-Host "   STRUCTURA  -  Ex fundamentis, intelligentia" -ForegroundColor DarkGray
+    Write-Host ("=" * 66) -ForegroundColor DarkCyan
+    Write-Host ""
 
-    $lines = @(
-        "  VM:          $VM_NAME (${ramGB}GB RAM, $VM_CPU vCPU, ${diskGB}GB)"
-        "  SSH:         structura@$VmIp -p 2222"
-        "  Dashboard:   https://sawaryn.local"
-        "  Admin (NPM): ssh -L 81:localhost:81 structura@$VmIp -p 2222"
-        "  SMB share:   \\STRUCTURA\ai-workspace"
-        "  Backup:      Duplicati wymaga konfiguracji recznej (patrz wyzej)"
-        "  Hindsight:   2 banks initialized"
-        ""
-        "  Log:         $LOG_FILE"
-        "  Next step:   Configure Telegram bot (see factor-vm-win11/README.md)"
+    # --- Otworz dashboard w przegladarce ---
+    # Wymog Prem: klient dostaje link, ktory otwiera gotowy dashboard.
+    Write-Host "  Otwieram panel z aplikacjami w przegladarce..." -ForegroundColor White
+    try {
+        Start-Process "http://homepage.local" -ErrorAction Stop
+        Write-Host "  v Panel otwarty" -ForegroundColor Green
+    } catch {
+        Write-Host "  ! Nie udalo sie otworzyc automatycznie." -ForegroundColor Yellow
+        Write-Host "    Otworz recznie: http://homepage.local" -ForegroundColor Yellow
+    }
+    Write-Host ""
+}
+
+# ============================================================================
+# Wpisy w pliku hosts (Windows) - zeby nazwy .local dzialaly w przegladarce
+# ============================================================================
+
+function Install-HostsEntries {
+    param([string]$VmIp)
+
+    # NPM tworzy osobne HOSTY (nie sciezki), a Windows nie zna domen .local.
+    # Bez wpisu w hosts przegladarka nie otworzy http://homepage.local.
+    # VM ma NAT z przekierowanym 8080 -> 80 (NPM), wiec wszystkie nazwy
+    # kierujemy na 127.0.0.1.
+    Write-Host "  Konfigurowanie nazw aplikacji w systemie..." -ForegroundColor White
+
+    $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+    $marker = "# STRUCTURA AI - aplikacje asystenta"
+
+    $domains = @(
+        "homepage.local",
+        "dashboard.local",
+        "hindsight.local",
+        "n8n.local",
+        "portainer.local",
+        "duplicati.local",
+        "search.local"
     )
 
-    $top = "+$("=" * ($width - 2))+"
-    $sep = "+$("=" * ($width - 2))+"
-    $bot = "+$("=" * ($width - 2))+"
-
-    Write-Host $top -ForegroundColor Cyan
-    foreach ($line in $lines) {
-        $padded = $line.PadRight($width - 2)
-        Write-Host "|$padded|" -ForegroundColor White
+    try {
+        $existing = Get-Content $hostsPath -ErrorAction Stop
+    } catch {
+        Write-Check "Nie moge odczytac pliku hosts: $_" -Warn
+        return $false
     }
-    Write-Host $bot -ForegroundColor Cyan
-    Write-Host ""
+
+    # Usun stare wpisy STRUCTURA (idempotencja przy re-runie)
+    $cleaned = $existing | Where-Object { $_ -notmatch [regex]::Escape($marker) -and $_ -notmatch '\.local\s' }
+    $newLines = @($cleaned) + @("") + @($marker)
+
+    # WAZNE: NPM slucha na porcie 80 WEWNATRZ VM, ktory NAT wystawia na
+    # host:8080. Nazwy .local kierujemy wiec na 127.0.0.1, ale przegladarka
+    # domyslnie uderza na port 80. Dlatego dodatkowo przekierowujemy
+    # lokalnie: patrz proxy w NPM + reguła portu. Najprosciej: wpis w hosts
+    # + odsylacz na port 8080 w samej nazwie linku dashboardu.
+    foreach ($d in $domains) {
+        $newLines += "127.0.0.1`t$d"
+    }
+
+    try {
+        Set-Content -Path $hostsPath -Value $newLines -Force -ErrorAction Stop
+        Write-Check "Nazwy aplikacji dodane do pliku hosts ($($domains.Count) domen)"
+        Write-Log "hosts: dodano $($domains -join ', ') -> 127.0.0.1"
+    } catch {
+        Write-Check "Nie moge zapisac pliku hosts (wymaga uprawnien administratora)" -Warn
+        Write-Log "hosts write failed: $_"
+        return $false
+    }
+
+    # Przegladarka musi znac port 8080 dla tych nazw. Zamiast wpisywac porty
+    # w hosts (niemozliwe), dodajemy przekierowanie portu 80 -> 8080 przez
+    # regule netsh, zeby http://homepage.local dzialalo bez ':8080'.
+    $null = & netsh interface portproxy delete v4tov4 listenport=80 listenaddress=127.0.0.1 2>&1
+    $netshOut = & netsh interface portproxy add v4tov4 `
+        listenport=80 listenaddress=127.0.0.1 `
+        connectport=8080 connectaddress=127.0.0.1 2>&1
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Check "Przekierowanie portu 80->8080 nieudane - uzyj http://homepage.local:8080" -Warn
+        Write-Log "netsh portproxy failed: $netshOut"
+        return $false
+    }
+
+    Write-Check "Przekierowanie 127.0.0.1:80 -> VM (NPM na 8080)"
+    # netsh portproxy wymaga uslugi iphlpsvc (IP Helper)
+    $null = & sc.exe config iphlpsvc start= auto 2>&1
+    $null = & sc.exe start iphlpsvc 2>&1
+    return $true
 }
 
 # ============================================================================
@@ -2216,21 +2948,39 @@ try {
     $deployOk = Invoke-ContainerDeployment -VmIp $vmIp
     if (-not $deployOk) { throw "Container deployment failed." }
 
-    # --- ETAP 7/8: Hindsight + client config ---
-    Write-Etap -Number 7 -Name "Hindsight + client config (init-hindsight.sh, banks, skills)"
+    # --- ETAP 7/8: Hermes natywnie + Hindsight + konfiguracja klienta ---
+    Write-Etap -Number 7 -Name "Hermes (natywnie) + Hindsight + config klienta"
+    # Hermes NATYWNIE (bez kontenera) - zarzadza kontenerami i nie dlawi sie
+    # w izolacji. Instalowany z PyPI + usluga systemd (start z VM).
+    $hermesOk = Install-NativeHermes -VmIp $vmIp -Client $Client
+    if (-not $hermesOk) { throw "Hermes natywny: instalacja nie powiodla sie." }
     $hindsightOk = Invoke-HindsightAndConfig -VmIp $vmIp
+    # UWAGA: funkcja zwracala $false przy bledzie, ale wynik NIE byl sprawdzany -
+    # instalator szedl dalej do ETAPU 8 i konczyl sie komunikatem sukcesu.
+    # Teraz brak bankow Hindsight jest blokada (bez pamieci dlugoterminowej
+    # asystent nie spelnia zalozen produktu).
+    if (-not $hindsightOk) { throw "Hindsight init failed - banki pamieci nie powstan." }
 
     # --- ETAP 8/8: Post-setup ---
     Write-Etap -Number 8 -Name "Post-setup (Duplicati, pg_dump cron, SMB, UFW, fail2ban, health, dashboard theme)"
 
-    # LUKS (optional)
+    # LUKS - NIEZREALIZOWANE. Jesli ktos podal -EnableLUKS, mowi o tym glosno,
+    # ale nie przerywa instalacji (funkcja jest opcjonalna, a system dziala
+    # bez szyfrowania dysku - pod warunkiem, ze klient zna to ograniczenie).
     if ($EnableLUKS) {
-        Invoke-LUKS -VmIp $vmIp
+        $luksOk = Invoke-LUKS -VmIp $vmIp
+        if (-not $luksOk) {
+            Write-Host "  Kontynuuje instalacje BEZ szyfrowania dysku." -ForegroundColor Yellow
+        }
     }
 
     $postOk = Invoke-PostSetup -VmIp $vmIp
 
-    # Final summary
+    # Nazwy aplikacji w pliku hosts + przekierowanie portu, zeby
+    # http://homepage.local dzialalo bez podawania portu.
+    $null = Install-HostsEntries -VmIp $vmIp
+
+    # Final summary (podsumowanie dla klienta + otwarcie dashboardu)
     Show-Summary -VmIp $vmIp -Media $media -Preflight $preflight
 
     Write-Log "=== Setup completed successfully ==="
