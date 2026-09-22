@@ -1557,7 +1557,10 @@ function Invoke-RepoAndAppdata {
         sudo mkdir -p /opt/structura/appdata/searxng
         sudo mkdir -p /opt/structura/appdata/telegram
         sudo mkdir -p /opt/structura/ai-workspace/{STRUCTURA,Sprawy,_trash}
-        sudo mkdir -p /opt/structura/backups/{appdata,ai-workspace,pgdump,pgdata}
+        sudo mkdir -p /opt/structura/backups/{appdata,ai-workspace,pgdump,pgdata,config}
+        # Katalog konfiguracji krytycznej dla backupu (.env + certyfikaty TLS).
+        # Bez .env backup bazy jest bezuzyteczny - nie ma czym sie zalogowac.
+        sudo mkdir -p /opt/structura/config
         sudo chmod 750 /opt/structura/appdata
         sudo chown -R 1000:1000 /opt/structura/appdata
         echo "appdata structure created"
@@ -1622,6 +1625,16 @@ function Invoke-ContainerDeployment {
         # Wlascicielem musi byc structura - 'make' uruchamia sie jako ten uzytkownik
         # i bez tego nie odczyta .env (root:600 => Permission denied).
         sudo chown structura:structura "`$CORE_DIR/.env"
+
+        # --- Kopia .env do katalogu objętego backupem ---
+        # .env lezy w repos/ (poza appdata), wiec NIE byl w zadnym jobie
+        # Duplicati. A zawiera wszystkie hasla - bez niego odtworzenie bazy
+        # z dumpu jest niemozliwe. Kopiujemy do /opt/structura/config/,
+        # ktore jest montowane do Duplicati jako /source/config.
+        sudo cp "`$CORE_DIR/.env" /opt/structura/config/.env
+        sudo chmod 600 /opt/structura/config/.env
+        sudo chown root:root /opt/structura/config/.env
+        echo "CONFIG_ENV_BACKED_UP"
         chmod 600 "`$CORE_DIR/.env"
 
         # Wygeneruj LOKALNE sekrety (Postgres, n8n, NPM, Duplicati, Portainer, SearXNG, SMB).
@@ -1702,7 +1715,26 @@ function Invoke-ContainerDeployment {
     $npmResult = (Invoke-SshScript -Script $npmCmd -Label "npm-setup" -sshTarget $sshTarget -SshPort $sshPort).Output
     if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $npmResult -ForegroundColor DarkGray }
     if ($npmResult -match 'NPM_SETUP_OK') {
-        Write-Check "NPM proxy hosts configured (6 hosts)"
+        Write-Check "NPM proxy hosts configured (7 hosts)"
+
+        # Certyfikaty TLS tez sa krytyczne: bez nich odtworzone domeny
+        # .local nie maja HTTPS. NPM trzyma je w wolumenie letsencrypt_data,
+        # ktory mapuje na /opt/structura/appdata/npm/letsencrypt.
+        $certCmd = @"
+            if [ -d /opt/structura/appdata/npm/letsencrypt ] && [ -n "`$(ls -A /opt/structura/appdata/npm/letsencrypt 2>/dev/null)" ]; then
+                sudo rm -rf /opt/structura/config/letsencrypt
+                sudo cp -r /opt/structura/appdata/npm/letsencrypt /opt/structura/config/letsencrypt
+                echo "CONFIG_CERTS_BACKED_UP"
+            else
+                echo "CONFIG_CERTS_EMPTY (NPM nie wystawil jeszcze certyfikatow)"
+            fi
+"@
+        $certResult = (Invoke-SshScript -Script $certCmd -Label "certs" -sshTarget $sshTarget -SshPort $sshPort).Output
+        if ($certResult -match 'CONFIG_CERTS_BACKED_UP') {
+            Write-Check "Certyfikaty TLS skopiowane do backupu (/opt/structura/config)"
+        } else {
+            Write-Check "Certyfikaty TLS: jeszcze nie ma (NPM wystawi przy pierwszym uzyciu HTTPS)" -Warn
+        }
     } else {
         Write-Check "NPM setup NIE powiodl sie - sprawdz log" -Warn
         Write-Log "setup-npm.sh: NPM_SETUP_FAILED. Output: $npmResult"
@@ -2542,10 +2574,17 @@ dashboard:
         PATCHER_FILE="`$CLIENT_DIR/patches/gh38238-patcher.py"
         if [ -f "`$PATCHER_FILE" ]; then
             # Patchujemy zainstalowany pakiet Hermesa (nie kontener).
+            # UWAGA 1: pakiet na PyPI nazywa sie 'hermes_cli' (dystrybucja
+            #          'hermes-agent'). 'import hermes' NIE ISTNIEJE.
+            # UWAGA 2: pakiet nalezy do root -> patcher MUSI isc przez sudo,
+            #          inaczej PermissionError.
             PATCH_APPLIED=0
-            PKG_DIR=`$("`$HERMES_BIN" -c 'import hermes,os;print(os.path.dirname(hermes.__file__))' 2>/dev/null || true)
+            PKG_DIR=`$(python3 -c 'import hermes_cli,os;print(os.path.dirname(hermes_cli.__file__))' 2>/dev/null || true)
             if [ -n "`$PKG_DIR" ]; then
-                python3 "`$PATCHER_FILE" --package-dir "`$PKG_DIR" 2>/dev/null && PATCH_APPLIED=1
+                sudo python3 "`$PATCHER_FILE" --package-dir "`$PKG_DIR" 2>&1 | tail -3
+                if sudo python3 "`$PATCHER_FILE" --package-dir "`$PKG_DIR" >/dev/null 2>&1; then
+                    PATCH_APPLIED=1
+                fi
             fi
             if [ "`$PATCH_APPLIED" -eq 1 ]; then
                 echo "GH38238_PATCHED"
