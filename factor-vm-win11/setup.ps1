@@ -1722,8 +1722,58 @@ function Invoke-ContainerDeployment {
         Write-Log "make deploy: MAKE_MISSING. Log: $deployResult"
         return $false
     } else {
-        Write-Check "Deployment FAILED - sprawdz logi kontenerow" -Fail
+        Write-Check "Deployment FAILED" -Fail
         Write-Log "make deploy nie zwrocil DEPLOY_DONE. Output: $deployResult"
+
+        # --- DIAGNOSTYKA ---
+        # Bylo: komunikat bez tresci -> trzeba bylo zgadywac, a kazdy obieg
+        # kosztuje ~15 min (VM + instalacja Ubuntu). Zbierz fakty z VM.
+        Write-Host ""
+        Write-Host "  --- DIAGNOSTYKA ---" -ForegroundColor Yellow
+
+        # 1. Ostatnie linie outputu make deploy (gdzie stanelo?)
+        if ($deployResult) {
+            $tail = ($deployResult -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 20) -join "`n"
+            Write-Host "  [make deploy - ostatnie linie]:" -ForegroundColor Gray
+            $tail -split "`n" | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            Write-Log "DEPLOY diag (tail): $tail"
+        }
+
+        # 2. Stan kontenerow + logi nie-zdrowych
+        $diagCmd = @"
+            cd /opt/structura/repos/structura-core
+            echo "=== docker compose ps -a ==="
+            sg docker -c "docker compose -f docker-compose.yaml ps -a" 2>&1 | head -25
+            echo ""
+            echo "=== stan kontenerow ==="
+            for c in postgresql hindsight n8n npm searxng duplicati portainer homepage; do
+                st=`$(sg docker -c "docker inspect --format={{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}no-hc{{end}} `$c" 2>/dev/null)
+                echo "  `$c: `$st"
+            done
+            echo ""
+            echo "=== logi nie-zdrowych (ostatnie 15 linii) ==="
+            for c in postgresql hindsight n8n npm searxng duplicati portainer homepage; do
+                st=`$(sg docker -c "docker inspect --format={{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}} `$c" 2>/dev/null)
+                if [ "`$st" != "healthy" ]; then
+                    echo "--- `$c (`$st) ---"
+                    sg docker -c "docker logs --tail 15 `$c" 2>&1 | sed "s/^/    /"
+                fi
+            done
+            echo ""
+            echo "=== .env sanity (bez wartosci sekretow) ==="
+            grep -cE "^[A-Z_]+=" .env | sed "s/^/  linii w .env: /"
+            grep -E "^(N8N_DB_PASSWORD|HINDSIGHT_PASSWORD|SMB_PASSWORD)=" .env | sed "s/=.*/=<ustawione>/"
+            echo "DIAG_DONE"
+"@
+        $diag = (Invoke-SshScript -Script $diagCmd -Label "deploy-diag" -sshTarget $sshTarget -SshPort $sshPort).Output
+        if ($diag) {
+            Write-Host ""
+            $diag -split "`n" | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+            Write-Log "DEPLOY diag (stan+logi): $diag"
+        }
+        Write-Host ""
+        Write-Host "  Pelny log: C:\structura\setup.log" -ForegroundColor Yellow
+        Write-Host "  ----------------------------------------" -ForegroundColor Yellow
         return $false
     }
 
