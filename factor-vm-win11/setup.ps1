@@ -1626,7 +1626,7 @@ function Invoke-ContainerDeployment {
         # i bez tego nie odczyta .env (root:600 => Permission denied).
         sudo chown structura:structura "`$CORE_DIR/.env"
 
-        # --- Kopia .env do katalogu objętego backupem ---
+        # --- Kopia .env do katalogu objetego backupem ---
         # .env lezy w repos/ (poza appdata), wiec NIE byl w zadnym jobie
         # Duplicati. A zawiera wszystkie hasla - bez niego odtworzenie bazy
         # z dumpu jest niemozliwe. Kopiujemy do /opt/structura/config/,
@@ -2028,7 +2028,7 @@ function Install-NativeHermes {
             echo "HINDSIGHT_CONFIG_MISSING"
         fi
 
-        # --- Skille: dwa źródła (core = wspolne, klient = custom) ---
+        # --- Skille: dwa zrodla (core = wspolne, klient = custom) ---
         mkdir -p "`$HERMES_HOME/skills"
         CORE_DIR="/opt/structura/repos/structura-core"
 
@@ -2784,7 +2784,7 @@ function Invoke-LUKS {
     # Realna implementacja wymaga: osobnego dysku/wolumenu w autoinstall
     # storage.layout + cryptsetup w late-commands (przed montowaniem /opt),
     # plus obsluga odblokowywania przy starcie (dropbear/clevis). To osobny
-    # zakres prac — NIE jest zrobione i NIE udajemy, ze jest.
+    # zakres prac - NIE jest zrobione i NIE udajemy, ze jest.
     # ========================================================================
     Write-Host "  Szyfrowanie dysku (LUKS)..." -ForegroundColor White
     Write-Check "LUKS: NIEZREALIZOWANE - dysk VM nie jest szyfrowany" -Fail
@@ -2938,7 +2938,7 @@ function Install-HostsEntries {
     # WAZNE: NPM slucha na porcie 80 WEWNATRZ VM, ktory NAT wystawia na
     # host:8080. Nazwy .local kierujemy wiec na 127.0.0.1, ale przegladarka
     # domyslnie uderza na port 80. Dlatego dodatkowo przekierowujemy
-    # lokalnie: patrz proxy w NPM + reguła portu. Najprosciej: wpis w hosts
+    # lokalnie: patrz proxy w NPM + regula portu. Najprosciej: wpis w hosts
     # + odsylacz na port 8080 w samej nazwie linku dashboardu.
     foreach ($d in $domains) {
         $newLines += "127.0.0.1`t$d"
@@ -3019,7 +3019,7 @@ try {
     $vmIp = $vmResult.VmIp
 
     if (-not $vmIp) {
-        throw "VM nie udostepnila dzialajacego SSH - instalacja nie dobiegla konca. Sprawdz C:\structura\setup.log i konsolę VM (VirtualBox Manager -> Show)."
+        throw "VM nie udostepnila dzialajacego SSH - instalacja nie dobiegla konca. Sprawdz C:\structura\setup.log i konsole VM (VirtualBox Manager -> Show)."
     }
 
     # --- ETAP 4/8: Docker setup ---

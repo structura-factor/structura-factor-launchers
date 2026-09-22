@@ -315,7 +315,7 @@ if (-not $launcherName) {
             Write-Host ""
             Write-Host "  Dostepne launchery:" -ForegroundColor White
             for ($i = 0; $i -lt $entries.Count; $i++) {
-                Write-Host ("    {0}. {1} — {2}" -f ($i + 1), $entries[$i].Name, $entries[$i].Label) -ForegroundColor Gray
+                Write-Host ("    {0}. {1} - {2}" -f ($i + 1), $entries[$i].Name, $entries[$i].Label) -ForegroundColor Gray
             }
             Write-Host ""
             $choice = Read-Host "  Wybierz launcher (numer, domyslnie 1)"
