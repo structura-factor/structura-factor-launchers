@@ -1013,10 +1013,9 @@ function Invoke-VMCreation {
         & $vbox modifyvm $VM_NAME --memory $VM_RAM --cpus $VM_CPU --nic1 nat --boot1 dvd --boot2 disk 2>&1 | Out-Null
         & $vbox modifyvm $VM_NAME --uart1 0x3F8 4 --uartmode1 file "$LOG_DIR\vm-console.log" 2>&1 | Out-Null
         # NAT port forwarding: host:2222 -> guest:22 (SSH), host:8080 -> guest:80
-        # UWAGA: NIE forwardujemy host:8443->guest:443. Port 8443 jest zajety
-        # wewnatrz goscia przez kontener telegram-bot (docker-compose: 127.0.0.1:8443),
-        # wiec forwarding VBox powodowalby konflikt "address already in use".
-        # HTTPS dla NPM wystawia sie na host:8080->guest:80 + NPM sam terminuje TLS.
+        # UWAGA: NIE forwardujemy host:8443->guest:443. HTTPS dla NPM wystawia
+        # sie na host:8080->guest:80 (NPM sam terminuje TLS), wiec dodatkowy
+        # forwarding nie jest potrzebny i moglby kolidowac z innymi uslugami.
         # NAT: host:2222 -> guest:22. sshd w gosciu slucha na 22 (domyslne) -
         # NIE przestawiamy go, bo handshake SSH w ETAPIE 3 odbywa sie zanim
         # ETAP 8 cokolwiek zmieni. Port 22 nie jest widoczny z sieci: VM ma NAT
@@ -1554,7 +1553,6 @@ function Invoke-RepoAndAppdata {
         sudo mkdir -p /opt/structura/appdata/duplicati
         sudo mkdir -p /opt/structura/appdata/homepage/icons
         sudo mkdir -p /opt/structura/appdata/searxng
-        sudo mkdir -p /opt/structura/appdata/telegram
         sudo mkdir -p /opt/structura/ai-workspace/{STRUCTURA,Sprawy,_trash}
         sudo mkdir -p /opt/structura/backups/{appdata,ai-workspace,pgdump,pgdata,config}
         # Katalog konfiguracji krytycznej dla backupu (.env + certyfikaty TLS).
