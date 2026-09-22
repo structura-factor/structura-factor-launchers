@@ -1412,7 +1412,7 @@ function Invoke-DockerSetup {
         # 'make npm-setup', 'make init-hindsight'. Bez niego instalacja nie ma prawa
         # dojsc do konca - lepiej zatrzymac sie tu z jasnym komunikatem.
         if command -v make >/dev/null 2>&1; then
-            echo "MAKE_OK $(make --version | head -1)"
+            echo "MAKE_OK `$(make --version | head -1)"
         else
             echo "MAKE_MISSING"
             exit 1
@@ -2136,7 +2136,7 @@ User=structura
 WorkingDirectory=/opt/structura
 Environment=HOME=/home/structura
 # 0.0.0.0 - kontener NPM musi dosiegnac dashboard przez host.docker.internal
-ExecStart=$HERMES_BIN dashboard --host 0.0.0.0 --port 9119 --no-open --skip-build
+ExecStart=`$HERMES_BIN dashboard --host 0.0.0.0 --port 9119 --no-open --skip-build
 Restart=on-failure
 RestartSec=10
 StandardOutput=append:/opt/structura/appdata/hermes/hermes.log
