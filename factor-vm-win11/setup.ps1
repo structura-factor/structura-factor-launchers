@@ -530,7 +530,33 @@ function Invoke-SshScript {
             return @{ Output = "scp nie powiodl sie: $($cp.Output)"; ExitCode = $cp.ExitCode }
         }
 
-        $r = Invoke-Ssh -SshArgs (@("-p", "$SshPort", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=NUL", $sshTarget, "sudo bash $RemotePath 2>&1 || bash $RemotePath"))
+        # ------------------------------------------------------------------
+        # URUCHOMIENIE NA VM - KRYTYCZNE: HOME musi wskazywac na uzytkownika
+        #
+        # UWAGA: bylo tu 'sudo bash $RemotePath'. Problem: 'sudo' ustawia
+        # HOME=/root, wiec WSZYSTKO, co instalator robil wzgledem $HOME,
+        # ladowalo w /root zamiast /home/structura:
+        #   /root/.local/bin/hermes          (binarka)
+        #   /root/.local/share/uv/tools/     (pakiet Hermesa)
+        #   /root/.hermes/{config.yaml,skills,SOUL.md,hindsight/}
+        #
+        # Skutek: hermes.service dziala jako User=structura, ktory NIE MA
+        # tych plikow -> ExecStart=/root/.local/bin/hermes -> status=203/EXEC
+        # -> usluga nie wstaje, instalacja przerwana w ETAPIE 7.
+        #
+        # Sprawdzone na VM: 'sudo bash -c "echo $HOME"' -> /root
+        #                   'sudo -u structura bash -c "echo $HOME"' -> /home/structura
+        #
+        # ROZWIAZANIE: uruchamiamy jako uzytkownik (bez sudo), a skrypty
+        # ktore potrzebuja roota uzywaja 'sudo' WEWNATRZ siebie (15 z 25
+        # here-stringow robi to explicite). To bezpieczniejsze i zgodne
+        # z tym, jak Hermes pozniej dziala.
+        #
+        # Fallback na 'sudo bash' zostawiony dla skryptow, ktore naprawde
+        # potrzebuja roota od poczatku (np. instalacja pakietow) - one
+        # i tak nie polegaja na $HOME.
+        # ------------------------------------------------------------------
+        $r = Invoke-Ssh -SshArgs (@("-p", "$SshPort", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=NUL", $sshTarget, "bash $RemotePath 2>&1 || sudo bash $RemotePath"))
         return @{ Output = $r.Output; ExitCode = $r.ExitCode }
     } finally {
         Remove-Item -LiteralPath $localPath -Force -ErrorAction SilentlyContinue
@@ -2170,6 +2196,34 @@ function Install-NativeHermes {
         # N8N: adres instancji (skille moga go uzywac)
         if ! grep -q '^N8N_URL=' "`$HERMES_HOME/.env" 2>/dev/null; then
             echo 'N8N_URL=http://127.0.0.1:5678' >> "`$HERMES_HOME/.env"
+        fi
+
+        # ------------------------------------------------------------------
+        # Haslo sudo/VM - AWARYJNE, dla Hermesa (gdyby kiedys wyskoczylo).
+        #
+        # UWAGA: sudo dziala BEZ HASLA (cloud-init ustawia
+        #   /etc/sudoers.d/010-structura-nopasswd: structura ALL=(ALL) NOPASSWD:ALL)
+        # wiec to haslo NIE jest potrzebne do normalnej pracy. Zapisujemy je
+        # jako awaryjne - np. gdy ktos wylaczy NOPASSWD albo Hermes bedzie
+        # potrzebowal hasla przy operacji na konsoli VM.
+        #
+        # To haslo logowania do VM (ustawiane przez VBoxManage --password),
+        # NIE do GitHub ani do zadnej uslugi zewnetrznej.
+        #
+        # Plik ma chmod 600, wlasciciel structura - tylko Hermes go widzi.
+        #
+        # ZMIENNE: SUDO_PASSWORD + VM_USER/VM_PASSWORD (aliasy, zeby model
+        # nie musial zgadywac nazwy).
+        # ------------------------------------------------------------------
+        if ! grep -q '^SUDO_PASSWORD=' "`$HERMES_HOME/.env" 2>/dev/null; then
+            {
+                echo ''
+                echo '# Hasla awaryjne VM (sudo dziala normalnie BEZ hasla - patrz sudoers.d)'
+                echo 'SUDO_PASSWORD=structura'
+                echo 'VM_USER=structura'
+                echo 'VM_PASSWORD=structura'
+            } >> "`$HERMES_HOME/.env"
+            echo "env: SUDO_PASSWORD ustawiony (awaryjny)"
         fi
 
         echo "hermes env: `$(grep -c '=' "`$HERMES_HOME/.env" 2>/dev/null || echo 0) zmiennych"
