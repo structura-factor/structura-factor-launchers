@@ -1837,8 +1837,8 @@ function Invoke-ContainerDeployment {
         "n8n"        = @{ Status = "waiting"; Timeout = 30; CheckCmd = "curl -sf http://localhost:5678/healthz" }
         "npm"        = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://localhost:81/api" }
         "homepage"   = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://localhost:3000/" }
-        "duplicati"  = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://localhost:8200/api/v1/health" }
-        "portainer"  = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://localhost:9443/api/status" }
+        "duplicati"  = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://localhost:8200/" }
+        "portainer"  = @{ Status = "waiting"; Timeout = 15; CheckCmd = "true" }  # obraz scratch: brak shella, healthcheck niemozliwy - patrz petla nizej
     }
 
     # Poll health on VM
@@ -1858,16 +1858,29 @@ function Invoke-ContainerDeployment {
             # (dokladnie ten sam mechanizm, ktory psul instalacje Dockera).
             # Invoke-SshScript wysyla skrypt PLIKIEM, wiec cytowanie jest bezpieczne.
             # W podwojnym cudzyslowie PS klamry NIE wymagaja escapowania.
-            $inspectScript = "docker inspect --format='{{.State.Health.Status}}' $svc 2>/dev/null || echo notfound"
+            $inspectScript = "docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}no-hc{{end}}|{{.State.Status}}' $svc 2>/dev/null || echo notfound"
             $checkResult = (Invoke-SshScript -Script $inspectScript -Label "health" -sshTarget $sshTarget -SshPort $sshPort).Output
             $checkResult = $checkResult.Trim()
 
-            if ($checkResult -eq 'healthy') {
+            # Format: "<health>|<runstate>", np. "healthy|running", "no-hc|running"
+            $hStat, $rStat = $checkResult -split '\|', 2
+            if (-not $rStat) { $rStat = $checkResult }  # fallback dla 'notfound'
+
+            if ($hStat -eq 'healthy') {
                 $info.Status = 'healthy'
-            } elseif ($checkResult -eq 'unhealthy') {
+            } elseif ($hStat -eq 'no-hc' -and $rStat -eq 'running') {
+                # Usluga BEZ healthchecka, ale dziala (np. portainer - obraz
+                # scratch, healthcheck niemozliwy: brak /bin/sh).
+                # Wczesniej taka usluga czekala 300s i raportowala porazke.
+                $info.Status = 'healthy'
+            } elseif ($hStat -eq 'unhealthy') {
                 $info.Status = 'unhealthy'
                 $allHealthy = $false
-            } elseif ($checkResult -eq 'starting' -or $checkResult -eq 'notfound') {
+            } elseif ($rStat -eq 'exited' -or $rStat -eq 'restarting' -or $rStat -eq 'dead') {
+                # Kontener padl - to realna porazka, nie 'jeszcze startuje'.
+                $info.Status = 'unhealthy'
+                $allHealthy = $false
+            } else {
                 $info.Status = 'starting'
                 $allHealthy = $false
             }
