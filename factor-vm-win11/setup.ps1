@@ -2389,7 +2389,41 @@ Environment=HOME=/home/structura
 #
 # Jesli kiedys potrzebny bedzie publiczny bind: skonfiguruj
 # dashboard.basic_auth w ~/.hermes/config.yaml (username + password_hash).
-ExecStart=`$HERMES_BIN dashboard --host 127.0.0.1 --port 9119 --no-open --skip-build
+# --- Fala 16: bind 0.0.0.0 + basic_auth (dashboard.local przez NPM) ---
+# 127.0.0.1 -> kontener NPM NIE dosiegnie loopbacka hosta -> 502
+# 172.17.0.1 -> dosiegnie, ale Hermes odrzuca Host: dashboard.local
+#               ("Invalid Host header")
+# 0.0.0.0 -> akceptuje dowolny Host; ochrone daje basic_auth
+#            (Hermes: "no unauthenticated public-dashboard option").
+HERMES_PY="`$HOME/.local/share/uv/tools/hermes-agent/bin/python3"
+[ -x "`$HERMES_PY" ] || HERMES_PY="`$HERMES_BIN"
+DASH_USER="asystent"
+DASH_PASS_PLAIN="`$(`$HERMES_PY -c 'import secrets; print(secrets.token_urlsafe(12))')"
+DASH_HASH="`$(`$HERMES_PY -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('`$DASH_PASS_PLAIN'))" 2>/dev/null)"
+DASH_SECRET="`$(`$HERMES_PY -c 'import secrets; print(secrets.token_hex(32))')"
+if [ -z "`$DASH_HASH" ]; then echo "DASHBOARD_HASH_FAILED"; exit 1; fi
+
+sudo mkdir -p /etc/systemd/system/hermes.service.d
+sudo tee /etc/systemd/system/hermes.service.d/10-bind.conf > /dev/null << DROPINEOF
+[Service]
+Environment=HERMES_DASHBOARD_BASIC_AUTH_USERNAME=`$DASH_USER
+Environment=HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=`$DASH_HASH
+Environment=HERMES_DASHBOARD_BASIC_AUTH_SECRET=`$DASH_SECRET
+ExecStart=
+ExecStart=`$HERMES_BIN dashboard --host 0.0.0.0 --port 9119 --no-open --skip-build
+DROPINEOF
+
+# Haslo do .env - klient je odczyta, zeby sie zalogowac do dashboardu.
+if ! grep -q '^DASHBOARD_ADMIN_PASSWORD=' "`$HERMES_HOME/.env" 2>/dev/null; then
+    {
+        echo ''
+        echo '# Login do dashboardu Hermesa (http://dashboard.local)'
+        echo "DASHBOARD_ADMIN_USER=`$DASH_USER"
+        echo "DASHBOARD_ADMIN_PASSWORD=`$DASH_PASS_PLAIN"
+    } >> "`$HERMES_HOME/.env"
+fi
+echo "dashboard: basic_auth user=`$DASH_USER (bind 0.0.0.0)"
+sudo systemctl daemon-reload
 Restart=on-failure
 RestartSec=10
 StandardOutput=append:/opt/structura/appdata/hermes/hermes.log
