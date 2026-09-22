@@ -2308,8 +2308,34 @@ Type=simple
 User=structura
 WorkingDirectory=/opt/structura
 Environment=HOME=/home/structura
-# 0.0.0.0 - kontener NPM musi dosiegnac dashboard przez host.docker.internal
-ExecStart=`$HERMES_BIN dashboard --host 0.0.0.0 --port 9119 --no-open --skip-build
+# ---------------------------------------------------------------------------
+# BIND: 127.0.0.1, NIE 0.0.0.0 (KRYTYCZNE)
+#
+# UWAGA: bylo tu --host 0.0.0.0 "zeby kontener NPM mogl dosiegnac dashboard
+# przez host.docker.internal". To NIE dziala i jest niebezpieczne:
+#
+# Hermes od czerwca 2026 (hardening hermes-0day) ODRZUCA start przy
+# publicznym bindzie bez skonfigurowanego providera auth. Dokladny komunikat
+# z hermes_cli/web_server.py:1080:
+#
+#   "Refusing to bind dashboard to 0.0.0.0 - <gate_reason>, but no auth
+#    providers are registered."
+#   -> SystemExit, usluga nie wstaje
+#
+# Dodatkowo --insecure jest NO-OP (nie omija juz bramki auth). Opcja pomocy:
+#   "a public bind always requires an auth provider (password or OAuth).
+#    Bind 127.0.0.1 + tunnel to keep it local."
+#
+# DLACZEGO 127.0.0.1 JEST WYSTARCZAJACE:
+#   - NPM (nasz reverse proxy) dziala na HOSCIE VM w sieci Docker. Aby
+#     dosiegnac usluge na 127.0.0.1 hoscie, uzywa network_mode: host lub
+#     extra_hosts: host.docker.internal:host-gateway (patrz docker-compose).
+#   - Dashboard jest dodatkowo dostepny przez NPM (proxy host dashboard.local).
+#   - Bezpieczniej: nie wystawiamy UI na wszystkie interfejsy bez auth.
+#
+# Jesli kiedys potrzebny bedzie publiczny bind: skonfiguruj
+# dashboard.basic_auth w ~/.hermes/config.yaml (username + password_hash).
+ExecStart=`$HERMES_BIN dashboard --host 127.0.0.1 --port 9119 --no-open --skip-build
 Restart=on-failure
 RestartSec=10
 StandardOutput=append:/opt/structura/appdata/hermes/hermes.log
