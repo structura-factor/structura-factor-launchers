@@ -26,7 +26,7 @@ param(
     [switch]$SkipMediaVerify,
 
     [Parameter(Mandatory = $false)]
-    [string]$LauncherRepo = "structura-factor/structura-factor-launchers@10f485ac2babebd802d98a17bd3cea5524c3da86",
+    [string]$LauncherRepo = "structura-factor/structura-factor-launchers@5e47bf95954a9d3076ede4374eb8a60d890ce0b2",
     # Jawny wybor launchera (nadpisuje 'launcher' z bootstrap.yaml).
     # Uzycie: .\bootstrap.ps1 -Client sawaryn -Launcher factor-vm-win11
     # Przydatne przy testach bez specyfikacji klienta.
