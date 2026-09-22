@@ -928,8 +928,7 @@ function Invoke-MediaSourcing {
 
 function Invoke-VMCreation {
     param(
-        [hashtable]$Media,
-        [string]$UnattendPath
+        [hashtable]$Media
     )
 
     $vbox = Get-VBoxManage
@@ -3009,13 +3008,11 @@ try {
     # --- ETAP 3/8: VM creation ---
     Write-Etap -Number 3 -Name "VM creation (VirtualBox VM, unattended Ubuntu install)"
 
-    # Find unattend XML
-    $unattendPath = "$PSScriptRoot\ubuntu-unattend.xml"
-    if (-not (Test-Path $unattendPath)) {
-        $unattendPath = "$LOG_DIR\launcher\factor-vm-win11\ubuntu-unattend.xml"
-    }
-
-    $vmResult = Invoke-VMCreation -Media $media -UnattendPath $unattendPath
+    # UWAGA: brak ubuntu-unattend.xml. Instalacja idzie INLINE szablonem
+    # VBoxManage --script-template (patrz Invoke-VMCreation), bo stock szablon
+    # VirtualBox ma bug launchpad #2090834 (late-commands przed utworzeniem
+    # uzytkownika) - klucz SSH wgrywa cloud-init przez ssh_authorized_keys.
+    $vmResult = Invoke-VMCreation -Media $media
     $vmIp = $vmResult.VmIp
 
     if (-not $vmIp) {

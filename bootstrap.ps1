@@ -358,17 +358,11 @@ if (-not $downloaded) {
     exit 1
 }
 
-# Step 6: Fetch ubuntu-unattend.xml from launcher repo
-$unattendUrl = "$GITHUB_RAW_BASE/$LauncherRepo/$launcherName/ubuntu-unattend.xml"
-$unattendPath = [System.IO.Path]::GetTempFileName()
-$downloaded = Invoke-SafeDownload -Url $unattendUrl -Destination $unattendPath -TimeoutSec $DOWNLOAD_TIMEOUT_SEC
-
-if (-not $downloaded) {
-    Write-StructuraLog "Failed to fetch ubuntu-unattend.xml from launcher." -Level "WARN"
-    # Non-fatal - setup.ps1 may have its own handling
-}
-
-# Step 7: Prepare local launcher directory
+# Step 6: Prepare local launcher directory
+# UWAGA: ubuntu-unattend.xml NIE jest pobierany. Plik byl martwy - setup.ps1
+# przyjmowal go jako parametr -UnattendPath, ale NIGDY nie uzywal: buduje
+# wlasny inline szablon przez VBoxManage --script-template (z ssh_authorized_keys,
+# bo stock szablon VBox ma bug launchpad #2090834 - late-commands przed userem).
 $launcherDir = "$STRUCTURA_LOG_DIR\launcher\$launcherName"
 if (-not (Test-Path $launcherDir)) {
     New-Item -ItemType Directory -Path $launcherDir -Force | Out-Null
@@ -376,9 +370,6 @@ if (-not (Test-Path $launcherDir)) {
 
 if ($setupBatPath) { Copy-Item $setupBatPath "$launcherDir\setup.bat" -Force }
 Copy-Item $setupPs1Path "$launcherDir\setup.ps1" -Force
-if (Test-Path $unattendPath) {
-    Copy-Item $unattendPath "$launcherDir\ubuntu-unattend.xml" -Force
-}
 
 Write-StructuraLog "Launcher files staged in $launcherDir"
 
@@ -430,4 +421,3 @@ Write-StructuraLog "=== Bootstrap complete ==="
 Remove-Item $tempClone -Recurse -Force -ErrorAction SilentlyContinue
 if ($setupBatPath) { Remove-Item $setupBatPath -Force -ErrorAction SilentlyContinue }
 Remove-Item $setupPs1Path -Force -ErrorAction SilentlyContinue
-Remove-Item $unattendPath -Force -ErrorAction SilentlyContinue

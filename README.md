@@ -25,7 +25,6 @@ structura-factor-launchers/
     ├── README.md
     ├── setup.ps1              # Główny skrypt instalacyjny
     ├── setup.bat              # Wrapper (nieużywany — jsDelivr blokuje .bat)
-    ├── ubuntu-unattend.xml    # Pozostałość — instalacja idzie szablonem cloud-init
     └── media/versions.txt     # SHA256 dla dużych plików
 ```
 

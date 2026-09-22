@@ -9,7 +9,7 @@
 #   3. dodac nowy launcher BEZ zmiany kodu bootstrap.ps1
 #
 # JAK DODAC NOWY LAUNCHER:
-#   1. utworz katalog <nazwa>/ z setup.ps1 (+ opcjonalnie ubuntu-unattend.xml)
+#   1. utworz katalog <nazwa>/ z setup.ps1
 #   2. dopisz wpis w ponizszej liscie
 #   3. gotowe — bootstrap.ps1 sam go znajdzie i zaoferuje
 #
@@ -33,7 +33,6 @@ launchers:
       - "VirtualBox 7.1 (instalator pobierze)"
       - "Ubuntu 24.04 Server ISO (instalator pobierze)"
     setup: setup.ps1
-    unattend: ubuntu-unattend.xml
     notes: |
       Domyslny launcher dla kancelarii. VM ma NAT (tylko porty 2222/8080
       forwardowane), wiec system klienta jest odizolowany od asystenta.
