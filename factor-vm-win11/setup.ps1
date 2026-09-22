@@ -1530,15 +1530,47 @@ function Invoke-RepoAndAppdata {
             sudo mkdir -p /opt/structura/repos
             sudo chown -R structura:structura /opt/structura
             cd /opt/structura/repos
-            git clone --depth 1 $coreUrl structura-core
-            git clone --depth 1 $clientUrl structura-clients-$Client
+
+            # Idempotentnie: klonuj ALBO zaktualizuj istniejace repo.
+            # Powod: nieudany przebieg zostawia sklonowane repo. Drugie
+            # 'git clone' konczy sie bledem "destination path already exists",
+            # a poniewaz brak tu 'set -e' -> skrypt leci dalej z NIEAKTUALNYM
+            # kodem i raportuje sukces. Poprawki w core (np. Makefile) nigdy
+            # nie docieraly na VM.
+            sync_repo() {
+                local url="`$1" dir="`$2"
+                if [ -d "`$dir/.git" ]; then
+                    echo "REPO_UPDATE `$dir"
+                    git -C "`$dir" fetch --depth 1 origin main                         && git -C "`$dir" reset --hard origin/main                         || { echo "REPO_FAIL `$dir"; return 1; }
+                else
+                    echo "REPO_CLONE `$dir"
+                    git clone --depth 1 "`$url" "`$dir" \
+                        || { echo "REPO_FAIL `$dir"; return 1; }
+                fi
+            }
+
+            sync_repo "$coreUrl" "structura-core" || exit 1
+            sync_repo "$clientUrl" "structura-clients-$Client" || exit 1
             echo "CLONE_DONE"
 "@
         $cloneResult = Invoke-WithRetry -Action {
             return (Invoke-SshScript -Script $cloneCmd -Label "clone" -sshTarget $sshTarget -SshPort $sshPort).Output
         } -Description "Git clone repos" -MaxRetries 3
 
-        Write-Check "Repos cloned"
+        # Sprawdz znacznik zamiast bezwarunkowego sukcesu. Bylo: Write-Check
+        # "Repos cloned" zawsze, nawet gdy git clone zwrocil blad (np.
+        # "destination path already exists") -> instalator lecial dalej
+        # z NIEZAKTUALNYM kodem na VM i raportowal sukces.
+        if ($cloneResult -notmatch 'CLONE_DONE') {
+            Write-Check "Klonowanie repo NIE powiodlo sie" -Fail
+            Write-Log "clone: brak CLONE_DONE. Output: $cloneResult"
+            return $false
+        }
+        if ($cloneResult -match 'REPO_UPDATE') {
+            Write-Check "Repozytoria zaktualizowane (fetch + reset do origin/main)"
+        } else {
+            Write-Check "Repos cloned"
+        }
     }
 
     # Create appdata directory structure
