@@ -1505,6 +1505,40 @@ function Invoke-DockerSetup {
         Write-Check "Docker installed and verified"
         Write-Check "Docker Compose installed and verified"
         Write-Check "make dostepny (wymagany przez ETAPY 6/7/8)"
+
+        # ------------------------------------------------------------------
+        # Guest Additions (vboxsf) - instalowane TU, nie dopiero w ETAPIE 8.
+        #
+        # DLACZEGO: vboxsf to modul jadra potrzebny do montowania folderu
+        # wspoldzielonego (Windows <-> VM). Wczesniej instalowal go dopiero
+        # Install-SharedFolder w ETAPIE 8, wiec:
+        #   - gdy ETAP 7 przerwal instalacje, GA nie bylo WCALE
+        #     (sprawdzone na VM: brak /opt/VBoxGuestAdditions-*, brak vboxsf)
+        #   - folder wymiany dla n8n musi istniec ZANIM wystartuja kontenery
+        #     (ETAP 6 montuje go do n8n jako /exchange)
+        #
+        # vboxsf dziala w ramach tej samej galezi VBox 7.x - repo Ubuntu daje
+        # virtualbox-guest-utils 7.0.x, host ma 7.1.x i modul sie laduje.
+        # ------------------------------------------------------------------
+        Write-Host "  Sprawdzanie Guest Additions (vboxsf dla folderu wspoldzielonego)..." -ForegroundColor White
+        $gaSetup = @"
+            if lsmod | grep -q vboxsf; then
+                echo "GA_ALREADY"
+            else
+                sudo apt-get update -qq 2>/dev/null || true
+                sudo apt-get install -y virtualbox-guest-utils 2>/dev/null || true
+                sudo modprobe vboxsf 2>/dev/null || true
+                if lsmod | grep -q vboxsf; then echo "GA_INSTALLED_OK"; else echo "GA_INSTALL_FAILED"; fi
+            fi
+"@
+        $gaSetupResult = (Invoke-SshScript -Script $gaSetup -Label "ga-setup" -sshTarget $sshTarget -SshPort $sshPort).Output
+        if ($gaSetupResult -match 'GA_INSTALL_FAILED') {
+            Write-Check "Guest Additions: instalacja nieudana - folder wspoldzielony moze nie dzialac" -Warn
+            Write-Log "GA install failed in Docker setup stage: $gaSetupResult"
+        } else {
+            Write-Check "Guest Additions gotowe (vboxsf dostepny)"
+        }
+
         return $true
     } else {
         Write-Check "Docker verification failed" -Fail
@@ -2646,17 +2680,43 @@ function Install-SharedFolder {
     # Rejestracja udzialu w VirtualBox z automount
     # --automount: montuje sie automatycznie przy starcie VM
     #       (bez tego trzeba recznie 'mount -t vboxsf' po kazdym restarcie)
-    $null = & $vbox sharedfolder remove $VmName --name "ai-workspace" 2>&1
-    $addOut = & $vbox sharedfolder add $VmName `
-        --name "ai-workspace" `
-        --hostpath "$hostFolder" `
-        --automount --auto-mount-point "/opt/structura/ai-workspace" 2>&1
+    # ------------------------------------------------------------------
+    # KRYTYCZNE: 'sharedfolder add' dziala TYLKO przy WYLACZONEJ VM.
+    # Przy dzialajacej polecenie milczaco zawodzi (i zwraca 0), a montaz
+    # nigdy nie powstaje. Sprawdzone na zywej VM: VBoxControl raportowal
+    # "No Shared Folders available", a katalog byl zwyklym ext4 zamiast
+    # vboxsf - czyli VM i Windows NIE dzielily plikow wcale.
+    #
+    # Dlatego: rozgalezienie po stanie VM.
+    #   dziala -> 'controlvm sharedfolder add' (bez restartu VM)
+    #   stoi   -> 'modifyvm --sharedfolder add'
+    # ------------------------------------------------------------------
+    $vmRunning = (& $vbox list runningvms 2>&1 | Out-String) -match [regex]::Escape("`"$VmName`"")
 
-    if ($LASTEXITCODE -ne 0) {
-        Write-Check "Folder wspoldzielony: rejestracja nieudana ($addOut)" -Warn
-        Write-Log "SharedFolder add failed: $addOut"
+    if ($vmRunning) {
+        # Usun stara rejestracje (jesli jest), potem dodaj na zywo.
+        $null = & $vbox controlvm $VmName sharedfolder remove "ai-workspace" 2>&1
+        $addOut = & $vbox controlvm $VmName sharedfolder add "ai-workspace" `
+            --hostpath "$hostFolder" --automount --auto-mount-point "/opt/structura/ai-workspace" 2>&1
+        $regMode = "controlvm (VM dziala)"
+    } else {
+        $null = & $vbox modifyvm $VmName --sharedfolder remove "ai-workspace" 2>&1
+        $addOut = & $vbox modifyvm $VmName --sharedfolder add "ai-workspace" `
+            --hostpath "$hostFolder" --automount --auto-mount-point "/opt/structura/ai-workspace" 2>&1
+        $regMode = "modifyvm (VM zatrzymana)"
+    }
+
+    # WERYFIKACJA: samo $LASTEXITCODE nie wystarcza (patrz wyzej) - pytamy
+    # VirtualBox, czy udzial NAPRAWDE jest zarejestrowany.
+    Start-Sleep -Seconds 2
+    $listOut = & $vbox sharedfolder list $VmName 2>&1 | Out-String
+    if ($listOut -notmatch 'ai-workspace') {
+        Write-Check "Folder wspoldzielony: rejestracja NIEUDANA ($regMode)" -Warn
+        Write-Log "SharedFolder not registered. add: $addOut"
+        Write-Host "      Recznie: VBoxManage controlvm $VmName sharedfolder add ai-workspace --hostpath `"$hostFolder`" --automount --auto-mount-point /opt/structura/ai-workspace" -ForegroundColor Yellow
         return $false
     }
+    Write-Log "SharedFolder zarejestrowany przez $regMode"
 
     Write-Check "Folder wspoldzielony: $hostFolder -> VM:/opt/structura/ai-workspace (automount)"
 
@@ -2673,6 +2733,8 @@ function Install-SharedFolder {
     $gaResult = (Invoke-SshScript -Script $gaCheck -Label "ga-check" -sshTarget $sshTarget -SshPort $sshPort).Output
 
     if ($gaResult -match 'GA_MISSING') {
+        # UWAGA: GA powinny byc zainstalowane w ETAPIE 4 (Invoke-DockerSetup).
+        # Ten blok jest zabezpieczeniem dla re-instalacji / starszych VM-na.
         # Bez Guest Additions vboxsf nie zadziala. Instalujemy z repo Ubuntu
         # (virtualbox-guest-utils dostarcza vboxsf dla VBox 7.x).
         Write-Host "    Guest Additions brak - instaluje virtualbox-guest-utils..." -ForegroundColor DarkGray
@@ -2705,6 +2767,17 @@ function Install-SharedFolder {
         sudo mkdir -p /opt/structura/ai-workspace
         sudo mount -a 2>/dev/null || true
         if mountpoint -q /opt/structura/ai-workspace 2>/dev/null; then echo "MOUNTED"; else echo "NOT_MOUNTED"; fi
+
+        # Podkatalog wymiany dla n8n (klient wrzuca plik -> workflow czyta ->
+        # zapisuje wynik). Montowany do kontenera jako /exchange.
+        # Uprawnienia: n8n dziala jako uid 1000, a vboxsf montuje z uid/gid
+        # z fstab (uid=1000,gid=1000) - dlatego ten katalog MUSI byc zapisywalny
+        # dla uid 1000, inaczej workflow nie zapisze wyniku.
+        if mountpoint -q /opt/structura/ai-workspace 2>/dev/null; then
+            mkdir -p /opt/structura/ai-workspace/n8n/{input,output,processed} 2>/dev/null || true
+            chmod -R 775 /opt/structura/ai-workspace/n8n 2>/dev/null || true
+            echo "EXCHANGE_READY"
+        fi
 "@
     $fstabResult = (Invoke-SshScript -Script $fstabCmd -Label "sharedfolder" -sshTarget $sshTarget -SshPort $sshPort).Output
 
