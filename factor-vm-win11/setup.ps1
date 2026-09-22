@@ -2325,17 +2325,47 @@ HERMESEOF
         sudo systemctl daemon-reload
         sudo systemctl enable hermes 2>/dev/null || true
         sudo systemctl restart hermes
-        sleep 5
 
-        if systemctl is-active --quiet hermes; then echo "HERMES_ACTIVE"; else echo "HERMES_INACTIVE"; fi
-        # Weryfikacja realna: dashboard wystawia /health (serve nie mial go wcale)
-        if curl -sf http://127.0.0.1:9119/health >/dev/null 2>&1; then
-            echo "HERMES_HTTP_OK"
-        elif curl -sf http://127.0.0.1:9119/ >/dev/null 2>&1; then
-            # Starsze wersje moga nie miec /health - wystarczy ze UI odpowiada
-            echo "HERMES_HTTP_OK_UI_ONLY"
-        else
-            echo "HERMES_HTTP_PENDING"
+        # ------------------------------------------------------------------
+        # CZEKANIE na start dashboardu.
+        #
+        # UWAGA: bylo tu 'sleep 5' i sprawdzenie 'systemctl is-active'.
+        # Hermes dashboard startuje dluzej (ladowanie FastAPI/uvicorn, skille,
+        # konfiguracja) - 5 sekund to za malo, wiec instalator raportowal
+        # "Usluga hermes.service NIE wystartowala" mimo poprawnego startu.
+        #
+        # Teraz: petla do 90s, sprawdzajaca REALNE HTTP /health (a nie tylko
+        # is-active - proces moze zyc, a jeszcze nie sluchac na porcie).
+        # ------------------------------------------------------------------
+        HERMES_ACTIVE=0
+        for i in `$(seq 1 30); do
+            if curl -sf http://127.0.0.1:9119/health >/dev/null 2>&1; then
+                echo "HERMES_ACTIVE (po `$((i*3))s, /health OK)"
+                HERMES_ACTIVE=1
+                break
+            fi
+            # Proces padl? Nie ma sensu czekac dalej.
+            if ! systemctl is-active --quiet hermes; then
+                echo "HERMES_PROCESS_DEAD (po `$((i*3))s)"
+                break
+            fi
+            sleep 3
+        done
+
+        if [ "`$HERMES_ACTIVE" -eq 0 ]; then
+            # Ostatnia szansa: UI odpowiada bez /health (starsze wersje)
+            if curl -sf http://127.0.0.1:9119/ >/dev/null 2>&1; then
+                echo "HERMES_ACTIVE_UI_ONLY"
+                HERMES_ACTIVE=1
+            fi
+        fi
+
+        if [ "`$HERMES_ACTIVE" -eq 0 ]; then
+            echo "HERMES_INACTIVE"
+            echo "--- diagnostyka ---"
+            systemctl status hermes --no-pager 2>&1 | head -12
+            echo "--- log ---"
+            tail -20 /opt/structura/appdata/hermes/hermes.log 2>&1
         fi
 "@
     $serviceResult = (Invoke-SshScript -Script $serviceCmd -Label "hermes-service" -sshTarget $sshTarget -SshPort $sshPort).Output
