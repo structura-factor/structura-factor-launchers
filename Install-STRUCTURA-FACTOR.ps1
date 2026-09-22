@@ -22,7 +22,7 @@ $ErrorActionPreference = 'Stop'
 # --- Stale ---
 $CLIENT = "sawaryn"
 $LAUNCHER_REPO = "structura-factor/structura-factor-launchers"
-$BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@2e0811321a7fabce36bdd90cf32f1923ac20859c/bootstrap.ps1"
+$BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@b27ea5c63aa6574b7663fa4ac2546856026b5e30/bootstrap.ps1"
 $BASE_DIR = $InstallPath
 $KEYS_DIR = "$BASE_DIR\klucze"
 $MEDIA_DIR = "$BASE_DIR\media"
