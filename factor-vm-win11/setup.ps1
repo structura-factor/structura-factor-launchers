@@ -3197,6 +3197,24 @@ try {
     }
 
     $postOk = Invoke-PostSetup -VmIp $vmIp
+    # UWAGA: bylo tu przypisanie bez sprawdzenia - instalator konczyl sie
+    # komunikatem "Setup completed successfully" i exit 0 NAWET gdy ETAP 8
+    # zwrocil $false (np. UFW/fail2ban/motyw/dashboard nie wstaly).
+    # Klient dostawal "sukces" z niedzialajacym firewall albo brakiem motywu.
+    # Ten sam wzorzec falszywego sukcesu, ktory tepimy od fali 2.
+    if (-not $postOk) {
+        Write-Host ""
+        Write-Check "ETAP 8 (post-setup) NIE zakonczyl sie sukcesem" -Warn
+        Write-Log "PostSetup zwrocil `$false - instalacja NIE jest pelna" -Level "WARN"
+        Write-Host "  Stack kontenerow DZIALA, ale czesc krokow post-setup wymaga uwagi:" -ForegroundColor Yellow
+        Write-Host "    - UFW / fail2ban (firewall)" -ForegroundColor DarkGray
+        Write-Host "    - motyw dashboardu" -ForegroundColor DarkGray
+        Write-Host "    - wpisy w /etc/hosts" -ForegroundColor DarkGray
+        Write-Host "  Szczegoly: $LOG_FILE" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  Instalacja konczy sie z ostrzezeniem - sprawdz powyzsze punkty." -ForegroundColor Yellow
+        Write-Host ""
+    }
 
     # Nazwy aplikacji w pliku hosts + przekierowanie portu, zeby
     # http://homepage.local dzialalo bez podawania portu.
