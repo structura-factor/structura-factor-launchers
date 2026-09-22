@@ -2139,6 +2139,36 @@ function Install-NativeHermes {
             cp "`$CLIENT_DIR/hermes-config.yaml" "`$HERMES_HOME/config.yaml"
         fi
 
+        # ------------------------------------------------------------------
+        # ~/.hermes/.env - zmienne SRODOWISKOWE dla Hermesa
+        #
+        # UWAGA: czesc konfiguracji Hermes czyta ze SRODOWISKA, nie z YAML.
+        # Przyklad: plugin web/searxng uzywa SEARXNG_URL (env), a sekcja
+        # 'searxng:' w config.yaml jest IGNOROWANA (sprawdzone w kodzie:
+        # plugins/web/searxng/provider.py -> KEY_ENV = "SEARXNG_URL").
+        # Bez tego pliku 'web.search_backend: searxng' z config.yaml nie ma
+        # dokad sie podlaczyc i wyszukiwarka nie dziala.
+        # ------------------------------------------------------------------
+        if [ ! -f "`$HERMES_HOME/.env" ]; then
+            touch "`$HERMES_HOME/.env"
+            chmod 600 "`$HERMES_HOME/.env"
+        fi
+
+        # SEARXNG_URL: kontener searxng wystawia port na 127.0.0.1:8080 w tej VM.
+        if ! grep -q '^SEARXNG_URL=' "`$HERMES_HOME/.env" 2>/dev/null; then
+            echo 'SEARXNG_URL=http://127.0.0.1:8080' >> "`$HERMES_HOME/.env"
+            echo "env: SEARXNG_URL ustawiony"
+        else
+            echo "env: SEARXNG_URL juz ustawiony"
+        fi
+
+        # N8N: adres instancji (skille moga go uzywac)
+        if ! grep -q '^N8N_URL=' "`$HERMES_HOME/.env" 2>/dev/null; then
+            echo 'N8N_URL=http://127.0.0.1:5678' >> "`$HERMES_HOME/.env"
+        fi
+
+        echo "hermes env: `$(grep -c '=' "`$HERMES_HOME/.env" 2>/dev/null || echo 0) zmiennych"
+
         # SOUL.md - osobowosc "prawnicza"
         if [ -f "`$CLIENT_DIR/SOUL.md" ]; then
             cp "`$CLIENT_DIR/SOUL.md" "`$HERMES_HOME/SOUL.md"
