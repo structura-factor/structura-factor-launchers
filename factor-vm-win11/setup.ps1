@@ -1749,8 +1749,41 @@ function Invoke-RepoAndAppdata {
             sudo cp /opt/structura/repos/structura-core/postgresql/pg_hba.conf /opt/structura/appdata/postgresql/
         fi
         # SearXNG config
-        if [ -f /opt/structura/repos/structura-core/searxng/settings.yml ]; then
-            sudo cp /opt/structura/repos/structura-core/searxng/settings.yml /opt/structura/appdata/searxng/
+        #
+        # UWAGA (naprawiony blad - dwie warstwy):
+        #
+        # 1) Kopiowal BEZUWARUNKOWO core/settings.yml, wiec wlasny plik
+        #    klienta (polski, z silnikiem ISAP) byl MARTWY.
+        #
+        # 2) Kopiowal do /opt/structura/appdata/searxng/ - a tego katalogu
+        #    NIKT NIE MONTUJE. To byl martwy zapis. Realnie montowany plik to
+        #    ./searxng/settings.yml WZGLEDEM cwd compose, a compose jest
+        #    uruchamiany z /opt/structura/repos/structura-core
+        #    (patrz SEARXNG_CONFIG_PATH w .env: "./searxng/settings.yml").
+        #
+        # DLACZEGO NIE KOPIUJEMY DO CORE: core to klon git, a sync_repo()
+        # robi 'git fetch + git reset --hard origin/main'. Zapis do core
+        # bylby skasowany przy KAZDEJ aktualizacji repo - czyli plik klienta
+        # zniknalby po pierwszym 'make update'. Dlatego nadpisujemy
+        # SEARXNG_CONFIG_PATH w .env, zeby wskazywal na KOPIE w appdata
+        # (appdata nie jest pod kontrolą gita i nie jest czyszczone).
+        #
+        # Kolejnosc: ten krok jest PRZED generate-secrets.sh, bo tamten
+        # wstrzykuje sekret do pliku wskazanego przez SEARXNG_CONFIG_PATH.
+        if [ -f "/opt/structura/repos/structura-clients-$Client/searxng/settings.yml" ]; then
+            sudo cp "/opt/structura/repos/structura-clients-$Client/searxng/settings.yml" /opt/structura/appdata/searxng/settings.yml
+            sudo chown structura:structura /opt/structura/appdata/searxng/settings.yml
+            # Wskaz na kopie z appdata (sciezka absolutna - .env jest czytany
+            # przez compose uruchamiany z katalogu core, ale absolutna jest
+            # jednoznaczna i nie zalezy od cwd).
+            if grep -q '^SEARXNG_CONFIG_PATH=' "$CORE_DIR/.env" 2>/dev/null; then
+                sudo sed -i 's|^SEARXNG_CONFIG_PATH=.*|SEARXNG_CONFIG_PATH=/opt/structura/appdata/searxng/settings.yml|' "$CORE_DIR/.env"
+            else
+                sudo bash -c "printf 'SEARXNG_CONFIG_PATH=/opt/structura/appdata/searxng/settings.yml\\n' >> '$CORE_DIR/.env'"
+            fi
+            echo "searxng: config klienta -> appdata (SEARXNG_CONFIG_PATH wskazany na kopie)"
+        else
+            echo "searxng: config core (klient nie ma wlasnego)"
         fi
         # pgdump script
         if [ -f /opt/structura/repos/structura-core/postgresql/pgdump.sh ]; then
