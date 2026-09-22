@@ -1,0 +1,71 @@
+# ============================================================================
+# launchers.yaml — MANIFEST DOSTEPNYCH LAUNCHEROW
+#
+# Po co: launcher to MODUL. Dzis mamy jeden (factor-vm-win11), ale architektura
+# przewiduje wiecej — np. instalacje bezposrednio na Ubuntu bez VM, albo wariant
+# dla innego systemu. Ten manifest pozwala:
+#   1. wybrac launcher interaktywnie (gdy bootstrap.yaml klienta nie wskazuje)
+#   2. udokumentowac wymagania kazdego launchera
+#   3. dodac nowy launcher BEZ zmiany kodu bootstrap.ps1
+#
+# JAK DODAC NOWY LAUNCHER:
+#   1. utworz katalog <nazwa>/ z setup.ps1 (+ opcjonalnie ubuntu-unattend.xml)
+#   2. dopisz wpis w ponizszej liscie
+#   3. gotowe — bootstrap.ps1 sam go znajdzie i zaoferuje
+#
+# Pole 'default' wskazuje launcher uzywany, gdy klient nie ma bootstrap.yaml
+# (np. instalacja testowa "dla kolegi" bez specyfikacji klienta).
+# ============================================================================
+
+version: "1.0"
+default: factor-vm-win11
+
+launchers:
+  - name: factor-vm-win11
+    label: "Windows 11 (maszyna wirtualna)"
+    description: "Ubuntu w VirtualBox na Windows. Bezpieczne odizolowanie asystenta od systemu klienta."
+    status: stable
+    platform: windows
+    requires:
+      - "Windows 11 / 10 (64-bit)"
+      - "16 GB RAM (zalecane 32 GB)"
+      - "50 GB wolnego dysku"
+      - "VirtualBox 7.1 (instalator pobierze)"
+      - "Ubuntu 24.04 Server ISO (instalator pobierze)"
+    setup: setup.ps1
+    unattend: ubuntu-unattend.xml
+    notes: |
+      Domyslny launcher dla kancelarii. VM ma NAT (tylko porty 2222/8080
+      forwardowane), wiec system klienta jest odizolowany od asystenta.
+      Hermes dziala natywnie WEWNATRZ VM, nie w kontenerze.
+
+  # --- PRZYSZLE (architektura gotowa, katalogi jeszcze nie istnieja) ---
+  #
+  # - name: factor-bare-ubuntu
+  #   label: "Ubuntu (bez maszyny wirtualnej)"
+  #   description: "Instalacja bezposrednio na Ubuntu - dla serwerow i zaawansowanych uzytkownikow."
+  #   status: planned
+  #   platform: linux
+  #   requires:
+  #     - "Ubuntu 22.04 / 24.04 (64-bit)"
+  #     - "8 GB RAM"
+  #     - "40 GB wolnego dysku"
+  #     - "Root/sudo"
+  #   setup: setup.sh
+  #   notes: |
+  #     Bez VM: asystent dziala w tym samym systemie co uzytkownik.
+  #     Uwaga: brak izolacji (kontenery widza system hosta).
+  #     Wymaga decyzji o modelu bezpieczenstwa — patrz Fala 2 (RODO).
+  #
+  # - name: factor-docker-only
+  #   label: "Docker (istniejacy host)"
+  #   description: "Tylko stack kontenerow na istniejacym Dockerze - bez instalacji Hermesa."
+  #   status: planned
+  #   platform: linux
+  #   requires:
+  #     - "Docker + Docker Compose"
+  #     - "8 GB RAM"
+  #   setup: setup.sh
+  #   notes: |
+  #     Dla klientow, ktorzy maja juz infrastrukture. Hermesa klient
+  #     instaluej sam (pip install hermes-agent) albo uzywa istniejacego.

@@ -2028,15 +2028,33 @@ function Install-NativeHermes {
             echo "HINDSIGHT_CONFIG_MISSING"
         fi
 
-        # Skille klienta (branding, estetyka, hyperframes, layout...)
-        if [ -d "`$CLIENT_DIR/skills" ]; then
-            mkdir -p "`$HERMES_HOME/skills"
-            cp -r "`$CLIENT_DIR/skills/." "`$HERMES_HOME/skills/" 2>/dev/null || true
-            SKILL_COUNT=`$(ls -1 "`$HERMES_HOME/skills" 2>/dev/null | wc -l)
-            echo "SKILLS_INSTALLED count=`$SKILL_COUNT"
+        # --- Skille: dwa źródła (core = wspolne, klient = custom) ---
+        mkdir -p "`$HERMES_HOME/skills"
+        CORE_DIR="/opt/structura/repos/structura-core"
+
+        # 1) Wspolne skille z core (generyczne, utrzymywane w jednym miejscu)
+        CORE_SKILLS=0
+        if [ -d "`$CORE_DIR/skills" ]; then
+            cp -r "`$CORE_DIR/skills/." "`$HERMES_HOME/skills/" 2>/dev/null || true
+            CORE_SKILLS=`$(ls -1 "`$CORE_DIR/skills" 2>/dev/null | wc -l)
+            echo "CORE_SKILLS count=`$CORE_SKILLS"
         else
-            echo "SKILLS_MISSING"
+            echo "CORE_SKILLS_MISSING"
         fi
+
+        # 2) Skille klienta (custom). Kopiowane PO core -> moga nadpisac wspolne.
+        CLIENT_SKILLS=0
+        if [ -d "`$CLIENT_DIR/skills" ]; then
+            cp -r "`$CLIENT_DIR/skills/." "`$HERMES_HOME/skills/" 2>/dev/null || true
+            CLIENT_SKILLS=`$(ls -1 "`$CLIENT_DIR/skills" 2>/dev/null | wc -l)
+            echo "CLIENT_SKILLS count=`$CLIENT_SKILLS"
+        else
+            echo "CLIENT_SKILLS_MISSING"
+        fi
+
+        # Lacznie w ~/.hermes/skills
+        SKILL_COUNT=`$(ls -1 "`$HERMES_HOME/skills" 2>/dev/null | wc -l)
+        echo "SKILLS_INSTALLED count=`$SKILL_COUNT"
 
         # Motyw dashboardu (Aether - ciemnoszare tlo czatu)
         if [ -d "`$CLIENT_DIR/dashboard-themes" ]; then
@@ -2065,11 +2083,20 @@ function Install-NativeHermes {
         Write-Check "Motyw dashboardu: nie znaleziono (sprawdz repo klienta)" -Warn
     }
 
-    $skillsMatch = [regex]::Match($configResult, 'SKILLS_INSTALLED count=(\d+)')
-    if ($skillsMatch.Success) {
-        Write-Check "Skille klienta: $($skillsMatch.Groups[1].Value)"
+    # Skille: osobno wspolne (core) i custom (klient)
+    $coreSkills = [regex]::Match($configResult, 'CORE_SKILLS count=(\d+)')
+    $clientSkills = [regex]::Match($configResult, 'CLIENT_SKILLS count=(\d+)')
+    $totalSkills = [regex]::Match($configResult, 'SKILLS_INSTALLED count=(\d+)')
+
+    if ($coreSkills.Success -and $clientSkills.Success) {
+        $c = [int]$coreSkills.Groups[1].Value
+        $k = [int]$clientSkills.Groups[1].Value
+        $t = if ($totalSkills.Success) { $totalSkills.Groups[1].Value } else { "$($c + $k)" }
+        Write-Check "Skille: $t (wspolne z core: $c, custom klienta: $k)"
+    } elseif ($configResult -match 'CORE_SKILLS_MISSING') {
+        Write-Check "Skille: BRAK katalogu skills/ w core" -Warn
     } else {
-        Write-Check "Skille klienta: BRAK (katalog skills/ w repo klienta)" -Warn
+        Write-Check "Skille: sprawdz log" -Warn
     }
 
     # Konfiguracja pamieci - bez niej pamiec nie dziala od pierwszego slowa

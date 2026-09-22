@@ -1,80 +1,101 @@
-# STRUCTURA FACTOR - Launchers
+# STRUCTURA FACTOR — Launchers
 
-Publiczne repozytorium launcherow instalacyjnych dla STRUCTURA AI - Personal Assistant prawniczy.
+Publiczne repozytorium **mechaniki instalacyjnej** dla STRUCTURA AI.
 
-## Zawartosc
+## Zasada: launcher nie wie nic o kliencie
+
+To repo zawiera **tylko mechanizm**. Nie ma tu konfiguracji żadnego klienta —
+wszystko, co specyficzne, klient trzyma we własnym repo (`structura-clients-*`).
+
+Dzięki temu ten sam launcher obsłuży kolejnych klientów bez zmian, a nowy
+target instalacji (np. Ubuntu bez VM) to **nowy katalog + wpis w manifeście**,
+bez dotykania istniejącego kodu.
+
+## Zawartość
 
 ```
 structura-factor-launchers/
-├── README.md                          # Ten plik
-├── bootstrap.ps1                      # Uniwersalny bootstrap (Windows PowerShell)
-├── bootstrap.sh                        # Uniwersalny bootstrap (Linux/Mac, stub)
-└── factor-vm-win11/                    # Launcher VM Windows 11
-    ├── README.md                       # Instrukcja launcher Win11
-    ├── setup.bat                       # Wrapper batch wywolujacy setup.ps1
-    ├── setup.ps1                       # Glowny skrypt instalacyjny (PowerShell)
-    ├── ubuntu-unattend.xml             # Cloud-init konfiguracja Ubuntu 24.04
-    └── media/
-        └── versions.txt                # SHA256 checksums dla duzych plikow
+├── README.md                  # Ten plik
+├── launchers.yaml             # MANIFEST dostępnych launcherów
+├── Test-STRUCTURA-FACTOR.ps1  # Entry point dla klienta (pobiera wszystko)
+├── Install-STRUCTURA-FACTOR.ps1  # Instalator interaktywny
+├── bootstrap.ps1              # Pobiera bootstrap.yaml klienta i odpala launcher
+├── bootstrap.sh               # Wariant Linux (stub)
+└── factor-vm-win11/           # Launcher: Ubuntu w VirtualBox na Windows
+    ├── README.md
+    ├── setup.ps1              # Główny skrypt instalacyjny
+    ├── setup.bat              # Wrapper (nieużywany — jsDelivr blokuje .bat)
+    ├── ubuntu-unattend.xml    # Pozostałość — instalacja idzie szablonem cloud-init
+    └── media/versions.txt     # SHA256 dla dużych plików
 ```
 
-## Szybki start
+## Jak działa wybór launchera
 
-### Windows 11 (klient kancelarii)
+Kolejność decyzyjna (pierwsze trafienie wygrywa):
 
-1. Pobierz i uruchom `bootstrap.ps1`:
+1. **Parametr `-Launcher`** — jawny wybór, np. przy testach bez klienta
+2. **`launcher:` w `bootstrap.yaml`** klienta — normalny tryb produkcyjny
+3. **Manifest `launchers.yaml`** — interaktywna lista, gdy nic nie wskazano
 
 ```powershell
-# Opcja A: Z deploy key
+# Klient ma bootstrap.yaml -> launcher wybrany automatycznie
 .\bootstrap.ps1 -Client sawaryn -DeployKeyPath C:\path\to\deploy_key
 
-# Opcja B: Z media caching (OneDrive - dla drugiego+ klienta)
-.\bootstrap.ps1 -Client sawaryn -MediaPath "C:\Users\premek\OneDrive\STRUCTURA\media\"
+# Test bez klienta -> wybór z listy
+.\bootstrap.ps1 -Launcher factor-vm-win11
+
+# Jawnie (nadpisuje wszystko)
+.\bootstrap.ps1 -Client sawaryn -Launcher factor-vm-win11
 ```
 
-2. Albo uruchom bezposrednio setup.ps1:
+## Dodanie nowego launchera
 
-```powershell
-.\factor-vm-win11\setup.bat
-```
+1. Utwórz katalog `<nazwa>/` z `setup.ps1` (lub `setup.sh`)
+2. Dopisz wpis w `launchers.yaml`
+3. Gotowe — `bootstrap.ps1` sam go znajdzie i zaoferuje
 
-### Media caching (OneDrive)
+Komentarze w manifeście (`#`) są pomijane przy parsowaniu, więc warianty
+planowane można trzymać zakomentowane — jak `factor-bare-ubuntu`
+w `launchers.yaml`.
 
-Pierwszy klient pobiera Ubuntu ISO (~2.5GB) i VirtualBox installer (~100MB) z internetu.
-Pliki sa zapisywane w wspoldzielonym folderze OneDrive (`STRUCTURA\media\`).
-
-Kolejni klienci uruchamiaja `setup.ps1 -MediaPath "C:\Users\<user>\OneDrive\STRUCTURA\media\"`
-i pliki leca z lokalnego OneDrive (oszczednosc ~10-15 min).
-
-Szczegoly w `factor-vm-win11/README.md`.
-
-## Bezpieczenstwo
-
-- To repo jest **publiczne** - zero sekretow w kodzie
-- Wszystkie parametry klienckie (API keys, hasla) ida do `.env` z `chmod 600`
-- Deploy keys ida do `~/.ssh/` (NIGDY w .env)
-- Skrypty sa idempotentne (guard clauses na kazdym kroku)
-
-## Architektura
+## Architektura instalacji (launcher `factor-vm-win11`)
 
 ```
-Windows 11 (host) → VirtualBox VM → Ubuntu 24.04 Server → Docker Compose → 9 kontenerow
-                                                                    ├── npm (Nginx Proxy Manager)
-                                                                    ├── hindsight (PostgreSQL)
-                                                                    ├── hermes (Hermes Agent)
-                                                                    ├── searxng (SearXNG)
-                                                                    ├── n8n (n8n workflows)
-                                                                    ├── duplicati (backup)
-                                                                    ├── portainer (Docker management)
-                                                                    ├── homepage (dashboard)
-                                                                    └── telegram-bot
+Windows (host) → VirtualBox VM → Ubuntu 24.04 Server
+                                    ├── Hermes Agent (NATYWNIE, systemd) :9119
+                                    └── Docker: 8 kontenerów
+                                        ├── npm          (reverse proxy)
+                                        ├── postgresql   (PostgreSQL 16 + pgvector)
+                                        ├── hindsight    (API pamięci)
+                                        ├── searxng      (prywatna wyszukiwarka)
+                                        ├── n8n          (automatyzacje)
+                                        ├── duplicati    (kopie zapasowe)
+                                        ├── portainer    (zarządzanie)
+                                        └── homepage     (dashboard klienta)
 ```
 
-## Powiazane repozytoria
+**Hermes działa natywnie na VM, nie w kontenerze** — dzięki temu zarządza
+kontenerami bezpośrednio i nie jest ograniczony izolacją.
 
-- `structura-factor/structura-core` (private) - bazowy stack Docker Compose
-- `structura-factor/structura-clients` (private) - konfiguracja per-klientowa (np. `sawaryn/`)
+## Bezpieczeństwo
+
+- To repo jest **publiczne** — zero sekretów w kodzie
+- Deploy keys idą do `~/.ssh/` (NIGDY do repo)
+- Wszystkie hasła klienta w `.env` z `chmod 600`
+- Skrypty są idempotentne (guard clauses na każdym kroku)
+
+## Powiązane repozytoria
+
+| Repo | Zawartość |
+|------|-----------|
+| `structura-core` (private) | Stack Docker, Makefile, **wspólne skille**, mechanika usług |
+| `structura-clients-<nazwa>` (private) | **Tylko** custom klienta: SOUL, konfiguracja, brandingu, skille własne |
+
+Podział skilli: generyczne (pdf, n8n, excalidraw) żyją w `core/skills/` —
+utrzymywane raz dla wszystkich klientów. Custom (microsoft-365, prawny-*)
+w repo klienta. Instalator łączy oba; klient może nadpisać wspólny skill.
 
 ## Licencja
 
-MIT - dla uzytku wewnetrznego kancelarii Sawaryn i Partnerzy oraz przyszlych klientow STRUCTURA AI.
+MIT — dla użytku wewnętrznego kancelarii Sawaryn i Partnerzy oraz przyszłych
+klientów STRUCTURA AI.

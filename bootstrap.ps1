@@ -27,6 +27,10 @@ param(
 
     [Parameter(Mandatory = $false)]
     [string]$LauncherRepo = "structura-factor/structura-factor-launchers@ba1d8d044142525424f847455d5181c71b5e3207",
+    # Jawny wybor launchera (nadpisuje 'launcher' z bootstrap.yaml).
+    # Uzycie: .\bootstrap.ps1 -Client sawaryn -Launcher factor-vm-win11
+    # Przydatne przy testach bez specyfikacji klienta.
+    [string]$Launcher = "",
 
     [Parameter(Mandatory = $false)]
     [string]$ClientRepo = "structura-factor/structura-clients-sawaryn",
@@ -265,14 +269,75 @@ if ($validationErrors.Count -gt 0) {
 
 Write-StructuraLog "bootstrap.yaml schema valid."
 
-# Step 3: Extract launcher name from bootstrap.yaml
+# Step 3: Ustal launcher
+# Kolejnosc: parametr -Launcher > pole 'launcher' w bootstrap.yaml > manifest
 $launcherName = $null
-if ($bootstrapYaml -match "(?m)^launcher\s*:\s*(.+)$") {
-    $launcherName = $Matches[1].Trim().Trim('"').Trim("'")
+
+# 3a. Jawny parametr ma najwyzszy priorytet
+if ($Launcher) {
+    $launcherName = $Launcher.Trim()
+    Write-StructuraLog "Launcher z parametru -Launcher: $launcherName"
+}
+
+# 3b. Pole 'launcher' z bootstrap.yaml klienta
+if (-not $launcherName -and $bootstrapYaml) {
+    if ($bootstrapYaml -match "(?m)^launcher\s*:\s*(.+)$") {
+        $launcherName = $Matches[1].Trim().Trim('"').Trim("'")
+        Write-StructuraLog "Launcher z bootstrap.yaml: $launcherName"
+    }
+}
+
+# 3c. Brak wskazania -> manifest launchers.yaml + wybor interaktywny
+if (-not $launcherName) {
+    Write-StructuraLog "Brak 'launcher' w bootstrap.yaml - czytam manifest launchers.yaml"
+
+    $manifestUrl = "$GITHUB_RAW_BASE/$LauncherRepo/launchers.yaml"
+    $manifestPath = [System.IO.Path]::GetTempFileName()
+    $manifestOk = Invoke-SafeDownload -Url $manifestUrl -Destination $manifestPath -TimeoutSec $DOWNLOAD_TIMEOUT_SEC
+
+    if ($manifestOk) {
+        $manifestContent = Get-Content -Path $manifestPath -Raw -ErrorAction SilentlyContinue
+        # Parsuj liste: "- name: <nazwa>" oraz "  label: <opis>"
+        $entries = @()
+        $lines = $manifestContent -split "`n"
+        $current = $null
+        foreach ($line in $lines) {
+            if ($line -match '^\s*-\s*name:\s*(.+)$') {
+                if ($current) { $entries += $current }
+                $current = @{ Name = $Matches[1].Trim().Trim('"'); Label = "" }
+            } elseif ($current -and $line -match '^\s+label:\s*(.+)$') {
+                $current.Label = $Matches[1].Trim().Trim('"')
+            }
+        }
+        if ($current) { $entries += $current }
+
+        if ($entries.Count -gt 0) {
+            Write-Host ""
+            Write-Host "  Dostepne launchery:" -ForegroundColor White
+            for ($i = 0; $i -lt $entries.Count; $i++) {
+                Write-Host ("    {0}. {1} — {2}" -f ($i + 1), $entries[$i].Name, $entries[$i].Label) -ForegroundColor Gray
+            }
+            Write-Host ""
+            $choice = Read-Host "  Wybierz launcher (numer, domyslnie 1)"
+            $idx = 0
+            if ($choice -match '^\d+$') {
+                $idx = [int]$choice - 1
+                if ($idx -lt 0 -or $idx -ge $entries.Count) { $idx = 0 }
+            }
+            $launcherName = $entries[$idx].Name
+            Write-StructuraLog "Launcher wybrany z manifestu: $launcherName"
+        } else {
+            Write-StructuraLog "Manifest launchers.yaml jest pusty lub nieczytelny" -Level "ERROR"
+        }
+    } else {
+        Write-StructuraLog "Nie udalo sie pobrac launchers.yaml z $LauncherRepo" -Level "ERROR"
+    }
 }
 
 if (-not $launcherName) {
-    Write-StructuraLog "Could not extract 'launcher' field from bootstrap.yaml" -Level "ERROR"
+    Write-StructuraLog "Nie ustalono launchera. Podaj -Launcher albo dodaj 'launcher' do bootstrap.yaml klienta." -Level "ERROR"
+    Write-Host ""
+    Write-Host "  Przyklad: .\bootstrap.ps1 -Client sawaryn -Launcher factor-vm-win11" -ForegroundColor Yellow
     exit 1
 }
 
