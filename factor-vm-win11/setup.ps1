@@ -1466,13 +1466,17 @@ function Invoke-RepoAndAppdata {
     $sshPort = 2222
 
     # Guard: check if repos already cloned
-    $repoCheck = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"test -d /opt/structura/repos/structura-core && echo EXISTS || echo MISSING"))).Output
-    if ($repoCheck -match 'EXISTS') {
-        Write-Check "Repos already cloned - pulling updates"
-        $null = Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"cd /opt/structura/repos/structura-core && git pull --ff-only 2>/dev/null; cd /opt/structura/repos/structura-clients-$Client && git pull --ff-only 2>/dev/null"))
-    } else {
-        # Clone repos
-        Write-Host "  Cloning repos to /opt/structura/repos/..." -ForegroundColor White
+    # UWAGA: wczesniej byla tu DRUGA, slabsza sciezka aktualizacji:
+    #   git pull --ff-only 2>/dev/null
+    # Blad zjadal 2>/dev/null, wynik nie byl sprawdzany, a gdy repo juz
+    # istnialo (typowe przy powtornym uruchomieniu) ta galaz PRZESKAKIWALA
+    # blok klonowania z sync_repo. Skutek: VM zostawala na STARYM kodzie
+    # (np. Makefile wymagajacy usunietej zmiennej), instalator pracowal
+    # na nieaktualnym core i padal bez sladu dlaczego.
+    #
+    # Teraz: JEDNA sciezka. Zawsze sync_repo - klonuje gdy brak,
+    # fetch + reset --hard gdy istnieje. Zero cichych bledow.
+    Write-Host "  Syncing repos to /opt/structura/repos/..." -ForegroundColor White
 
         # Transfer deploy key(s) to VM for git clone authentication.
         # UWAGA: GitHub NIE pozwala uzyc tego samego deploy keya w dwoch repo
@@ -1571,7 +1575,7 @@ function Invoke-RepoAndAppdata {
         } else {
             Write-Check "Repos cloned"
         }
-    }
+        # (sprawdzenie CLONE_DONE z return $false jest wyzej - wystarczy)
 
     # Create appdata directory structure
     Write-Host "  Creating appdata structure..." -ForegroundColor White
