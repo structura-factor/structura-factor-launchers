@@ -1595,6 +1595,45 @@ function Invoke-RepoAndAppdata {
         # Bez .env backup bazy jest bezuzyteczny - nie ma czym sie zalogowac.
         sudo mkdir -p /opt/structura/config
         sudo chmod 750 /opt/structura/appdata
+
+        # ====================================================================
+        # PGDATA: przygotowanie PRZED startem kontenera (KRYTYCZNE)
+        # ====================================================================
+        # pgdata to BIND-MOUNT do appdata/postgresql/data (nie named volume),
+        # wiec 'docker compose down -v' ani 'docker volume rm' NIE czyszcza
+        # tego katalogu. Nieudana instalacja zostawia w nim resztki, a wtedy
+        # entrypoint postgresa przerywa z:
+        #   initdb: error: directory "/var/lib/postgresql/data" exists but
+        #           is not empty
+        # i baza NIGDY WIECEJ NIE WSTANIE.
+        #
+        # UWAGA na kolejnosc: NIE da sie tego naprawic w init.sh, bo skrypty
+        # z /docker-entrypoint-initdb.d uruchamiaja sie DOPIERO PO initdb.
+        # Zabezpieczenie MUSI byc tutaj - przed 'docker compose up'.
+        #
+        # Bezpieczenstwo: czyscimy TYLKO gdy brak PG_VERSION (czyli katalog
+        # nie jest zainicjowana baza). Prawdziwe dane sa nietykalne.
+        PGDATA_DIR="/opt/structura/appdata/postgresql/data"
+        if [ -d "`$PGDATA_DIR" ] && [ -n "`$(ls -A "`$PGDATA_DIR" 2>/dev/null)" ]; then
+            if [ -f "`$PGDATA_DIR/PG_VERSION" ]; then
+                echo "pgdata: OK - istnieje zainicjowana baza (PG_VERSION), zachowuje"
+            else
+                echo "pgdata: UWAGA - katalog niepusty, ale bez PG_VERSION (resztki):"
+                echo "pgdata:   `$(ls -A "`$PGDATA_DIR" 2>/dev/null | head -5 | tr '\n' ' ')"
+                echo "pgdata:   usuwam resztki, zeby initdb mogl wystartowac"
+                sudo rm -rf "`$PGDATA_DIR"
+                sudo mkdir -p "`$PGDATA_DIR"
+                echo "pgdata: wyczyszczone"
+            fi
+        else
+            echo "pgdata: pusty - initdb zainicjalizuje baze"
+        fi
+
+        # Wlasciciel PGDATA musi byc postgres (uid 999 w obrazie pgvector).
+        # Bez tego entrypoint robi chown i (przy nieoczekiwanym uid) konczy bledem.
+        sudo chown -R 999:999 "`$PGDATA_DIR"
+        sudo chmod 700 "`$PGDATA_DIR"
+
         sudo chown -R 1000:1000 /opt/structura/appdata
         echo "appdata structure created"
 "@
