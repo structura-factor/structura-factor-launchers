@@ -1048,7 +1048,44 @@ function Invoke-VMCreation {
         # i tylko 2222 jest forwardowane z hosta.
         # UWAGA: UFW musi zezwalac na 22 (a nie na 2222) - patrz ETAP 8.
         & $vbox modifyvm $VM_NAME --natpf1 "ssh,tcp,,2222,,22" 2>&1 | Out-Null
-        & $vbox modifyvm $VM_NAME --natpf1 "http,tcp,,8080,,80" 2>&1 | Out-Null
+
+        # HTTP: NAJPIERW port 80 (jesli wolny), dopiero potem 8080.
+        #
+        # DLACZEGO TO KRYTYCZNE: nazwy .local laduja w pliku hosts klienta
+        # wskazujac na 127.0.0.1 (patrz Install-HostsEntries). Przegladarka
+        # przy http://homepage.local uderza na PORT 80. Gdy NAT wystawia NPM
+        # tylko na 8080, nazwa .local nie otwiera sie ("nie mozna polaczyc"):
+        #   127.0.0.1:80  -> nic nie slucha  (bylo tak na CiemPincie)
+        #   127.0.0.1:8080 -> NPM (dziala, ale bez portu w adresie nie trafisz)
+        #
+        # Sprawdzone na CiemPincie: 192.168.40.8:80 = ZAMKNIETY, :8080 = otwarty.
+        #
+        # Wybor portu: 80 gdy wolny (nazwy dzialaja bez portu w adresie),
+        # w przeciwnym razie 8080 + ostrzezenie (konflikt z IIS/Skype itp.).
+        $hostPort = 8080
+        $port80Taken = $false
+        try {
+            $conn80 = Get-NetTCPConnection -LocalPort 80 -State Listen -ErrorAction SilentlyContinue
+            if ($conn80) { $port80Taken = $true }
+        } catch {
+            # PS 5.1 bez modulu NetTCPIP - sprawdz przez netstat
+            $ns = (netstat -ano 2>$null | Select-String ":80\s+.*LISTENING")
+            if ($ns) { $port80Taken = $true }
+        }
+
+        if ($port80Taken) {
+            Write-Check "Port 80 na tym komputerze jest zajety - uzywam 8080" -Warn
+            Write-Log "NAT http: port 80 zajety, forwarding na 8080"
+        } else {
+            $hostPort = 80
+            Write-Log "NAT http: port 80 wolny, forwarding na 80 (nazwy .local dzialaja bez portu)"
+        }
+
+        # 127.0.0.1 (nie 0.0.0.0): uslugi klienta NIE maja byc widoczne w LAN.
+        # Wczesniej pusty hostip = 0.0.0.0, wiec kazdy w sieci mogl wejsc na
+        # n8n/homepage VM-ki klienta pod :8080.
+        & $vbox modifyvm $VM_NAME --natpf1 "http,tcp,127.0.0.1,$hostPort,,80" 2>&1 | Out-Null
+        $global:StructuraHostPort = $hostPort
         # Enable VRDE if Extension Pack is installed (for RDP preview)
         $extpackReady = (& $vbox list extpacks 2>$null | Select-String "Oracle VM VirtualBox Extension Pack")
         if ($extpackReady) {
@@ -3264,9 +3301,17 @@ function Install-HostsEntries {
 
     # NPM tworzy osobne HOSTY (nie sciezki), a Windows nie zna domen .local.
     # Bez wpisu w hosts przegladarka nie otworzy http://homepage.local.
-    # VM ma NAT z przekierowanym 8080 -> 80 (NPM), wiec wszystkie nazwy
-    # kierujemy na 127.0.0.1.
+    #
+    # KLUCZOWE: wpis wskazuje 127.0.0.1, a przegladarka przy http://homepage.local
+    # uderza na PORT 80. Dlatego NAT MUSI wystawiac NPM na hoscie na porcie 80
+    # (patrz Invoke-VMCreation: port 80 gdy wolny, inaczej 8080 jako fallback).
+    # Gdy NAT wystawia tylko 8080, nazwy .local NIE otwieraja sie bez portu
+    # w adresie ("nie mozna polaczyc") - tak bylo na CiemPincie.
+    # Jesli port 80 byl zajety, klient musi wpisywac adres z :8080.
     Write-Host "  Konfigurowanie nazw aplikacji w systemie..." -ForegroundColor White
+    if ($global:StructuraHostPort -and $global:StructuraHostPort -ne 80) {
+        Write-Check "Port 80 zajety - otwieraj aplikacje z ':8080' w adresie (np. http://homepage.local:8080)" -Warn
+    }
 
     $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
     $marker = "# STRUCTURA AI - aplikacje asystenta"
@@ -3311,24 +3356,22 @@ function Install-HostsEntries {
         return $false
     }
 
-    # Przegladarka musi znac port 8080 dla tych nazw. Zamiast wpisywac porty
-    # w hosts (niemozliwe), dodajemy przekierowanie portu 80 -> 8080 przez
-    # regule netsh, zeby http://homepage.local dzialalo bez ':8080'.
-    $null = & netsh interface portproxy delete v4tov4 listenport=80 listenaddress=127.0.0.1 2>&1
-    $netshOut = & netsh interface portproxy add v4tov4 `
-        listenport=80 listenaddress=127.0.0.1 `
-        connectport=8080 connectaddress=127.0.0.1 2>&1
+    # Port: NAT przekierowuje host:80 (lub :8080 gdy 80 zajety) BEZPOSREDNIO do
+    # gosciowi:80, wiec zadne dodatkowe przekierowanie nie jest potrzebne.
+    #
+    # UWAGA: byl tu netsh portproxy 127.0.0.1:80 -> 127.0.0.1:8080. Usuniete,
+    # bo:
+    #   1) Konflikt o port 80 - NAT (127.0.0.1:80 -> guest:80) i portproxy
+    #      (sluchajacy na 127.0.0.1:80) nie moga dzialac jednoczesnie;
+    #      jeden z nich nie zbindowal sie, co tlumaczy zamkniety port 80.
+    #   2) Zbedna zaleznosc od uslugi iphlpsvc (IP Helper) - bez niej
+    #      portproxy milczy, a objaw jest identyczny ("nie mozna polaczyc").
+    #   3) Dwa przejscia (80 -> 8080 -> NAT -> guest) tam, gdzie wystarczy
+    #      jedno (80 -> NAT -> guest).
+    # Gdy port 80 na hoscie jest zajety, NAT uzywa 8080 i uzytkownik wpisuje
+    # ':8080' w adresie - ostrzezenie jest w komunikatach wyzej.
+    Write-Check "Aplikacje pod adresami .local (np. http://homepage.local)"
 
-    if ($LASTEXITCODE -ne 0) {
-        Write-Check "Przekierowanie portu 80->8080 nieudane - uzyj http://homepage.local:8080" -Warn
-        Write-Log "netsh portproxy failed: $netshOut"
-        return $false
-    }
-
-    Write-Check "Przekierowanie 127.0.0.1:80 -> VM (NPM na 8080)"
-    # netsh portproxy wymaga uslugi iphlpsvc (IP Helper)
-    $null = & sc.exe config iphlpsvc start= auto 2>&1
-    $null = & sc.exe start iphlpsvc 2>&1
     return $true
 }
 
