@@ -2009,9 +2009,23 @@ function Install-NativeHermes {
             cp "`$CLIENT_DIR/SOUL.md" "`$HERMES_HOME/SOUL.md"
         fi
 
-        # Reguly pamieci
+        # Reguly pamieci (wytyczne dla modelu)
         if [ -f "`$CLIENT_DIR/hindsight-rules.yaml" ]; then
             cp "`$CLIENT_DIR/hindsight-rules.yaml" "`$HERMES_HOME/hindsight-rules.yaml"
+        fi
+
+        # --- Konfiguracja pluginu pamieci (KRYTYCZNE) ---
+        # Plugin czyta $HERMES_HOME/hindsight/config.json (NIE config.yaml).
+        # Zawiera: tryb polaczenia, bank, auto_retain/auto_recall, tryby recall.
+        # Bez tego: bank "hermes" zamiast "Kontekst_Sprawy", tryb "cloud"
+        # zamiast "local_external" (Hermes szukalby Hindsight Cloud).
+        if [ -f "`$CLIENT_DIR/hindsight/config.json" ]; then
+            mkdir -p "`$HERMES_HOME/hindsight"
+            cp "`$CLIENT_DIR/hindsight/config.json" "`$HERMES_HOME/hindsight/config.json"
+            chmod 600 "`$HERMES_HOME/hindsight/config.json"
+            echo "HINDSIGHT_CONFIG_INSTALLED"
+        else
+            echo "HINDSIGHT_CONFIG_MISSING"
         fi
 
         # Skille klienta (branding, estetyka, hyperframes, layout...)
@@ -2056,6 +2070,15 @@ function Install-NativeHermes {
         Write-Check "Skille klienta: $($skillsMatch.Groups[1].Value)"
     } else {
         Write-Check "Skille klienta: BRAK (katalog skills/ w repo klienta)" -Warn
+    }
+
+    # Konfiguracja pamieci - bez niej pamiec nie dziala od pierwszego slowa
+    if ($configResult -match 'HINDSIGHT_CONFIG_INSTALLED') {
+        Write-Check "Pamiec: konfiguracja Hindsight wgrana (~/.hermes/hindsight/config.json)"
+    } else {
+        Write-Check "Pamiec: BRAK hindsight/config.json - pamiec nie zapisze sie automatycznie" -Fail
+        Write-Log "Install-NativeHermes: HINDSIGHT_CONFIG_MISSING (brak w repo klienta)"
+        return $false
     }
 
     # ------------------------------------------------------------------
