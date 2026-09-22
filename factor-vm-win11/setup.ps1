@@ -2856,23 +2856,37 @@ dashboard:
             #          inaczej PermissionError.
             #
             # UWAGA 3 (KRYTYCZNE): Hermes jest instalowany przez 'uv tool install',
-            # ktore tworzy IZOLOWANE srodowisko (~/.local/share/uv/tools/...).
+            # ktore tworzy IZOLOWANE srodowisko w ~/.local/share/uv/tools/.
             # Systemowy python3 NIE MA tam hermes_cli w sys.path, wiec
             #   python3 -c 'import hermes_cli'
             # zwracalo pustke -> PKG_DIR pusty -> patch NIE byl aplikowany,
-            # a tlo czatu zostawalo CZARNE zamiast ciemnoszarego.
+            # a tlo czatu zostawalo CZARNE zamiast ciemnoszarego (#2A2A2E).
             #
-            # Dlatego uzywamy Pythona z tego samego srodowiska co binarka
-            # hermes: $HERMES_BIN to <env>/bin/hermes, a Python lezy obok
-            # w <env>/bin/python3. Fallback: systemowy python3 (venv+pip).
+            # UWAGA 4 (sprawdzone na zywej VM): $HERMES_BIN to SYMLINK
+            #   ~/.local/bin/hermes -> ~/.local/share/uv/tools/hermes-agent/bin/hermes
+            # wiec 'dirname $HERMES_BIN' daje ~/.local/bin, gdzie NIE MA pythona.
+            # Trzeba rozwiazac symlink: 'readlink -f'.
+            # Dowod (VM): ~/.local/bin/hermes -> uv/tools/.../bin/hermes (symlink)
+            #             ~/.local/bin/ zawiera TYLKO binarki, zero pythona
+            #             uv/tools/hermes-agent/bin/python3 istnieje i WIDZI hermes_cli
             HERMES_PY=""
-            if [ -n "`$HERMES_BIN" ]; then
-                CAND=`$(dirname "`$HERMES_BIN")/python3
+            HERMES_REAL=`$(readlink -f "`$HERMES_BIN" 2>/dev/null || echo "`$HERMES_BIN")
+            if [ -n "`$HERMES_REAL" ]; then
+                CAND=`$(dirname "`$HERMES_REAL")/python3
                 [ -x "`$CAND" ] && HERMES_PY="`$CAND"
                 if [ -z "`$HERMES_PY" ]; then
-                    CAND=`$(dirname "`$HERMES_BIN")/python
+                    CAND=`$(dirname "`$HERMES_REAL")/python
                     [ -x "`$CAND" ] && HERMES_PY="`$CAND"
                 fi
+            fi
+            # Fallback: znane lokalizacje uv tool (gdyby readlink zawiodl)
+            if [ -z "`$HERMES_PY" ]; then
+                for CAND in "`$HOME/.local/share/uv/tools/hermes-agent/bin/python3" \
+                            "`$HOME/.local/share/uv/tools/hermes-agent/bin/python"; do
+                    if [ -x "`$CAND" ] && "`$CAND" -c 'import hermes_cli' 2>/dev/null; then
+                        HERMES_PY="`$CAND"; break
+                    fi
+                done
             fi
             # Fallback: venv Hermesa, potem systemowy python3
             if [ -z "`$HERMES_PY" ] && [ -x "`$HERMES_HOME/venv/bin/python3" ]; then
