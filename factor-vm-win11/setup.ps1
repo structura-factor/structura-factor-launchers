@@ -1871,12 +1871,12 @@ function Invoke-ContainerDeployment {
         # 8 kontenerow. Hermes NIE jest tu - dziala natywnie na VM (systemd),
         # a Telegram odszedl z zakresu instalacji.
         "postgresql" = @{ Status = "waiting"; Timeout = 30; CheckCmd = "pg_isready" }
-        "hindsight"  = @{ Status = "waiting"; Timeout = 90; CheckCmd = "curl -sf http://localhost:8888/health" }
-        "searxng"    = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://localhost:8080/healthz" }
-        "n8n"        = @{ Status = "waiting"; Timeout = 30; CheckCmd = "curl -sf http://localhost:5678/healthz" }
-        "npm"        = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://localhost:81/api" }
-        "homepage"   = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://localhost:3000/" }
-        "duplicati"  = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://localhost:8200/" }
+        "hindsight"  = @{ Status = "waiting"; Timeout = 90; CheckCmd = "curl -sf http://127.0.0.1:8888/health" }
+        "searxng"    = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://127.0.0.1:8080/healthz" }
+        "n8n"        = @{ Status = "waiting"; Timeout = 30; CheckCmd = "curl -sf http://127.0.0.1:5678/healthz" }
+        "npm"        = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://127.0.0.1:81/api" }
+        "homepage"   = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://127.0.0.1:3000/" }
+        "duplicati"  = @{ Status = "waiting"; Timeout = 15; CheckCmd = "curl -sf http://127.0.0.1:8200/" }
         "portainer"  = @{ Status = "waiting"; Timeout = 15; CheckCmd = "true" }  # obraz scratch: brak shella, healthcheck niemozliwy - patrz petla nizej
     }
 
@@ -2007,9 +2007,14 @@ function Invoke-HindsightAndConfig {
         # musi dzialac z HOSTA - API Hindsight jest wystawione na localhost:8888.
         # Uruchamiamy skrypt bezposrednio (bez 'make', ktore wymagaloby repo).
         chmod +x "`$CLIENT_DIR/init-hindsight.sh"
-        HINDSIGHT_URL="http://localhost:8888" bash "`$CLIENT_DIR/init-hindsight.sh"
+        # UWAGA: 127.0.0.1, NIE 'localhost'. Compose binduje port hindsight
+        # jako "127.0.0.1:8888:8888" (tylko IPv4), a 'localhost' rozwiazuje
+        # sie najpierw na ::1 -> "Connection refused". Ten sam blad zatrzymal
+        # healthcheck n8n (fala 6e); tutaj objaw bylby gorszy - bank pamieci
+        # nigdy nie powstalby i ETAP 7 raportowalby porazke inicjalizacji.
+        HINDSIGHT_URL="http://127.0.0.1:8888" bash "`$CLIENT_DIR/init-hindsight.sh"
         # Weryfikacja REALNA - liczymy banki przez API, nie przez komunikat.
-        BANK_COUNT=`$(curl -sf http://localhost:8888/v1/default/banks 2>/dev/null | grep -o '"bank_id"' | wc -l)
+        BANK_COUNT=`$(curl -sf http://127.0.0.1:8888/v1/default/banks 2>/dev/null | grep -o '"bank_id"' | wc -l)
         if [ "`$BANK_COUNT" -ge 1 ]; then
             echo "HINDSIGHT_INIT_DONE banks=`$BANK_COUNT"
         else
@@ -2324,9 +2329,9 @@ HERMESEOF
 
         if systemctl is-active --quiet hermes; then echo "HERMES_ACTIVE"; else echo "HERMES_INACTIVE"; fi
         # Weryfikacja realna: dashboard wystawia /health (serve nie mial go wcale)
-        if curl -sf http://localhost:9119/health >/dev/null 2>&1; then
+        if curl -sf http://127.0.0.1:9119/health >/dev/null 2>&1; then
             echo "HERMES_HTTP_OK"
-        elif curl -sf http://localhost:9119/ >/dev/null 2>&1; then
+        elif curl -sf http://127.0.0.1:9119/ >/dev/null 2>&1; then
             # Starsze wersje moga nie miec /health - wystarczy ze UI odpowiada
             echo "HERMES_HTTP_OK_UI_ONLY"
         else
