@@ -38,7 +38,7 @@ $LOGS_DIR = "$BASE_DIR\logs"
 
 # Staly pin instalatora - test powtarzalny.
 # lancuch: Test -> Install @5527cc0 -> bootstrap @e45edad -> setup.ps1 @c231b77
-$INSTALL_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@079d7ac829c610f36d9e329c5d808f7a7512cf3e/Install-STRUCTURA-FACTOR.ps1"
+$INSTALL_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@c39ba8ec350dfbd25cf55b57c2cca6d04502440d/Install-STRUCTURA-FACTOR.ps1"
 
 Write-Host ""
 Write-Host "+============================================================+" -ForegroundColor Cyan
