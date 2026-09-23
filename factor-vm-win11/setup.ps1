@@ -1754,7 +1754,43 @@ function Invoke-RepoAndAppdata {
     $mkdirCmd = @"
         sudo mkdir -p /opt/structura/appdata/postgresql/{data,pgdump}
         sudo mkdir -p /opt/structura/appdata/hermes/{memories,skills,session}
-        sudo mkdir -p /opt/structura/appdata/n8n/config
+        # UWAGA: NIE tworz tu 'config'! Bylo: mkdir -p .../appdata/n8n/config
+        # i to ZABIJALO n8n (EISDIR).
+        #
+        # Lancuch: n8n_data to BIND-MOUNT do /opt/structura/appdata/n8n,
+        # a kontener montuje go jako /home/node/.n8n. n8n 2.x trzyma USTAWIENIA
+        # w PLIKU /home/node/.n8n/config (kod: settingsFile = path.join(
+        # n8nFolder, 'config'), czytany przez readFileSync). Katalog o tej
+        # nazwie powoduje:
+        #   Error: EISDIR: illegal operation on a directory, read
+        #   at InstanceSettings.loadOrCreate (instance-settings.ts:326)
+        # -> n8n wpada w petle restartow -> healthcheck nigdy nie jest healthy
+        # -> 'dependency failed to start: container n8n is unhealthy'
+        # -> ETAP 6 pada.
+        #
+        # Katalog appdata/n8n MUSI istniec (bind-mount), ale 'config' tworzy
+        # sobie sam n8n - jako plik.
+        sudo mkdir -p /opt/structura/appdata/n8n
+
+        # ====================================================================
+        # NAPRAWA STARYCH INSTALACJI: usun 'config' jesli to KATALOG.
+        #
+        # Instalacje sprzed tej poprawki maja tam pusty katalog (tworzyl go
+        # mkdir powyzej) i n8n NIE WSTANIE - readFileSync na katalogu daje
+        # EISDIR. Czyszczenie jest BEZPIECZNE, bo sprawdzamy typ:
+        #   - katalog  -> to nasz blad, usuwamy (n8n zrobi sobie plik)
+        #   - plik     -> to PRAWDZIWE ustawienia n8n (klucz szyfrujacy),
+        #                 NIE DOTYKAMY
+        # Sprawdzamy tylko sciezke 'config' w appdata/n8n - nic wiecej.
+        # ====================================================================
+        N8N_CFG="/opt/structura/appdata/n8n/config"
+        if [ -d "`$N8N_CFG" ]; then
+            echo "n8n: UWAGA - 'config' jest KATALOGIEM (blad instalatora) - usuwam"
+            echo "n8n:   objaw bez naprawy: EISDIR -> n8n w petli restartow"
+            sudo rm -rf "`$N8N_CFG"
+        elif [ -f "`$N8N_CFG" ]; then
+            echo "n8n: OK - 'config' jest plikiem (ustawienia n8n zachowane)"
+        fi
         sudo mkdir -p /opt/structura/appdata/npm/{data,letsencrypt}
         sudo mkdir -p /opt/structura/appdata/portainer
         sudo mkdir -p /opt/structura/appdata/duplicati
