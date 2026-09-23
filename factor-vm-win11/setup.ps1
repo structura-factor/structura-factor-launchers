@@ -1357,13 +1357,34 @@ function Get-VmIpAndSsh {
     $sshReady = $false
     $probeKey = "$env:USERPROFILE\.ssh\id_ed25519"
     $sawDenied = $false
+    $lastProbeLine = ''
     $maxIter = 90          # 90 x 30s = 45 min
     for ($i = 0; $i -lt $maxIter; $i++) {
         $probe = ssh -v -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=8 -o BatchMode=yes -i $probeKey $sshHost "echo SSH_OK" 2>&1
+        # Zapamietaj OSTATNIA sensowna linie - bez tego nie wiemy, CZY sshd
+        # w ogole odpowiada (Connection refused/reset = brak sshd; Permission
+        # denied = sshd jest, czekamy na klucz; timeout = VM nieosiagalna).
+        # Poprzednia wersja nie logowala nic i przy awarii zostawala z
+        # domyslem zamiast danymi.
+        $pl = ($probe | Where-Object { $_ -match 'refused|reset|denied|timed out|No route|Connection' } | Select-Object -Last 1)
+        if ($pl) { $lastProbeLine = $pl.ToString().Trim() }
         if ($probe -match 'SSH_OK') {
             $ErrorActionPreference = $prevEAP
             Write-Host ""
             Write-Check "SSH gotowe (klucz dziala) - ${sshHost}:${sshPort}"
+
+            # Odlacz ISO od napedu. Unattended install VirtualBoxa zwykle robi
+            # to sam, ale jesli medium zostanie podlaczone, a boot order to
+            # 'boot1 dvd', to KAZDY restart gosci probuje bootowac instalator
+            # od nowa zamiast z dysku. Odlaczenie tutaj (po udanym SSH, czyli
+            # gdy zainstalowany system juz dziala) jest bezpieczne i zamyka
+            # te klase awarii na przyszlosc.
+            $prevEAP3 = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            & $vbox storageattach $VM_NAME --storagectl "IDE" --port 1 --device 0 --type dvddrive --medium none 2>&1 | Out-Null
+            $ErrorActionPreference = $prevEAP3
+            Write-Log "ISO odlaczone od napedu IDE (zapobiega ponownemu bootowaniu instalatora)"
+
             $sshReady = $true
             break
         }
@@ -1384,6 +1405,9 @@ function Get-VmIpAndSsh {
         $min = [math]::Floor($i * 30 / 60)
         $phase = if ($sawDenied) { 'sshd jest, czekam na klucz' } else { 'start instalatora' }
         Write-Host "  [${min}min] VM: $stateStr - $phase..." -ForegroundColor DarkGray
+        if ($lastProbeLine) {
+            Write-Host "        ssh: $lastProbeLine" -ForegroundColor DarkGray
+        }
         if ($stateStr -eq 'poweroff' -or $stateStr -eq 'aborted') {
             Write-Check "VM zatrzymala sie nieoczekiwanie (stan: $stateStr)" -Fail
             $ErrorActionPreference = $prevEAP
@@ -1395,6 +1419,17 @@ function Get-VmIpAndSsh {
 
     if (-not $sshReady) {
         Write-Check "SSH kluczem nie zadzialal po $([math]::Floor($maxIter*30/60)) min" -Warn
+        if ($lastProbeLine) {
+            Write-Host "    Ostatnia odpowiedz ssh: $lastProbeLine" -ForegroundColor Yellow
+            if ($lastProbeLine -match 'refused|reset') {
+                Write-Host "    -> 'refused/reset' = na VM NIE MA sshd. Instalacja Ubuntu" -ForegroundColor DarkGray
+                Write-Host "       nie doszla do konca albo system nie wstal z dysku." -ForegroundColor DarkGray
+                Write-Host "       Sprawdz podglad VM w VirtualBox Manager (co jest na konsoli)." -ForegroundColor DarkGray
+            } elseif ($lastProbeLine -match 'denied') {
+                Write-Host "    -> 'denied' = sshd dziala, ale klucz nieaktywny." -ForegroundColor DarkGray
+                Write-Host "       Sprawdz: sudo cloud-init status --long" -ForegroundColor DarkGray
+            }
+        }
         if ($sawDenied) {
             Write-Host "    sshd odpowiadal, ale klucz nigdy nie stal sie aktywny." -ForegroundColor Yellow
             Write-Host "    Sprawdz w VM: sudo cat /var/log/vboxpostinstall.log oraz" -ForegroundColor DarkGray
