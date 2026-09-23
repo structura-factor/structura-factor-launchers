@@ -459,43 +459,112 @@ function Test-Command {
 function Invoke-Ssh {
     param(
         [string[]]$SshArgs,
-        [int]$TimeoutSec = 0
+        [int]$TimeoutSec = 1800
     )
     # -o LogLevel=ERROR tlumi "Warning: Permanently added ... to the list of
     # known hosts" U ZRODLA. Bez tego warning leci na stderr, a PowerShell 5.1
     # opakowuje go w NativeCommandError i (mimo try/catch) wciska do wyniku,
     # przez co weryfikacje typu "$out -match 'Docker version'" nie dzialaja.
-    $argsWithLog = @('-o', 'LogLevel=ERROR') + $SshArgs
+    #
+    # -o BatchMode=yes: ssh NIGDY nie czeka na input uzytkownika (haslo,
+    # potwierdzenie klucza hosta). Bez tego, gdy klucz nie zadziala albo sshd
+    # poprosi o cokolwiek, proces WISI w nieskonczonosc - a konsola jest
+    # wspoldzielona z instalatorem, wiec uzytkownik widzi "stoi i nic dalej".
+    # Z BatchMode ssh konczy sie szybko bledem, ktory obslugujemy.
+    $argsWithLog = @('-o', 'LogLevel=ERROR', '-o', 'BatchMode=yes') + $SshArgs
 
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
+    # ------------------------------------------------------------------
+    # TIMEOUT (naprawiony blad): parametr $TimeoutSec ISTNIAL, ale NIE BYL
+    # UZYWANY - wywolanie '& ssh' wisialo w nieskonczonosc, gdy polaczenie
+    # stanelo (np. VM zajeta, sshd nie odpowiada, siec NAT sie zacial).
+    # Objaw dla uzytkownika: instalator "stoi i nic dalej" bez zadnego
+    # komunikatu - dokladnie tak wygladalo zawieszenie na ETAPIE 4
+    # ("Docker already installed: docker version ..." i koniec).
+    #
+    # Domyslnie 1800 s (30 min), bo przez ta funkcje leca instalacje apt/pip/uv
+    # ktore na wolnym laczu potrafia trwac kilkanascie minut. Krotkie
+    # WERYFIKACJE (docker --version itp.) dostaja krotszy limit w miejscu
+    # wywolania.
+    # ------------------------------------------------------------------
+    $limit = if ($TimeoutSec -gt 0) { $TimeoutSec } else { 1800 }
+    # Pliki na wyjscie: NIE polegamy wylacznie na %TEMP% - jesli sciezka
+    # tymczasowa jest niedostepna/usunieta, Start-Process nie ma gdzie pisac.
+    # Fallback: katalog roboczy procesu (istnieje zawsze).
+    $tmpDir = $env:TEMP
+    if (-not $tmpDir -or -not (Test-Path -LiteralPath $tmpDir)) { $tmpDir = (Get-Location).Path }
+    $tmpOut = Join-Path $tmpDir ("ssh-out-{0}.tmp" -f ([guid]::NewGuid().ToString('N')))
+    $tmpErr = Join-Path $tmpDir ("ssh-err-{0}.tmp" -f ([guid]::NewGuid().ToString('N')))
     try {
-        $out = & ssh @argsWithLog 2>&1
-        $rc = $LASTEXITCODE
-        # Odfiltruj resztki NativeCommandError / warningow z tekstu wyniku
-        $clean = @($out | Where-Object {
-            $_.ToString() -notmatch '^(ssh\.exe|scp\.exe)\s*:'
-        } | ForEach-Object { $_.ToString() })
-        return @{ Output = (($clean | Out-String).Trim()); ExitCode = $rc; Raw = ($out | Out-String).Trim() }
+        $proc = Start-Process -FilePath 'ssh' -ArgumentList $argsWithLog `
+            -NoNewWindow -PassThru -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr `
+            -ErrorAction Stop
+        if (-not $proc.WaitForExit($limit * 1000)) {
+            try { $proc.Kill() } catch { }
+            $msg = "SSH TIMEOUT po ${limit}s (komenda: $($SshArgs[-1]))"
+            Write-Log $msg -Level "WARN"
+            Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
+            return @{ Output = "SSH_TIMEOUT: $msg"; ExitCode = 124; Raw = $msg }
+        }
+        $rc = $proc.ExitCode
     } catch {
-        return @{ Output = ''; ExitCode = 255; Raw = "$_" }
-    } finally {
-        $ErrorActionPreference = $prevEAP
+        # Start-Process nie powiodl sie (np. brak 'ssh' w PATH) - zwroc blad
+        # zamiast leciec dalej z pustymi danymi.
+        $msg = "SSH START FAILED: $_"
+        Write-Log $msg -Level "ERROR"
+        Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
+        return @{ Output = $msg; ExitCode = 255; Raw = $msg }
     }
+
+    $so = Get-Content $tmpOut -Raw -ErrorAction SilentlyContinue
+    $se = Get-Content $tmpErr -Raw -ErrorAction SilentlyContinue
+    Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
+
+    $out = @()
+    if ($so) { $out += ($so -split "`r?`n") }
+    if ($se) { $out += ($se -split "`r?`n") }
+    # Odfiltruj resztki NativeCommandError / warningow z tekstu wyniku
+    $clean = @($out | Where-Object { $_ -and ($_.ToString() -notmatch '^(ssh\.exe|scp\.exe)\s*:') } | ForEach-Object { $_.ToString() })
+    return @{ Output = (($clean | Out-String).Trim()); ExitCode = $rc; Raw = (($out | Out-String).Trim()) }
 }
 
 function Invoke-Scp {
-    param([string[]]$ScpArgs)
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
+    param(
+        [string[]]$ScpArgs,
+        [int]$TimeoutSec = 600
+    )
+    # Timeout jak w Invoke-Ssh: 'scp' tez moze wisiec (np. VM zajeta albo
+    # siec NAT sie zaciela), a wtedy instalator stoi bez komunikatu.
+    $limit = if ($TimeoutSec -gt 0) { $TimeoutSec } else { 600 }
+    $tmpDir = $env:TEMP
+    if (-not $tmpDir -or -not (Test-Path -LiteralPath $tmpDir)) { $tmpDir = (Get-Location).Path }
+    $tmpOut = Join-Path $tmpDir ("scp-out-{0}.tmp" -f ([guid]::NewGuid().ToString('N')))
+    $tmpErr = Join-Path $tmpDir ("scp-err-{0}.tmp" -f ([guid]::NewGuid().ToString('N')))
     try {
-        $out = & scp @(@('-o', 'LogLevel=ERROR') + $ScpArgs) 2>&1
-        return @{ Output = ($out | Out-String).Trim(); ExitCode = $LASTEXITCODE }
+        $proc = Start-Process -FilePath 'scp' -ArgumentList (@('-o','LogLevel=ERROR','-o','BatchMode=yes') + $ScpArgs) `
+            -NoNewWindow -PassThru -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr `
+            -ErrorAction Stop
+        if (-not $proc.WaitForExit($limit * 1000)) {
+            try { $proc.Kill() } catch { }
+            $msg = "SCP TIMEOUT po ${limit}s"
+            Write-Log $msg -Level "WARN"
+            Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
+            return @{ Output = "SCP_TIMEOUT: $msg"; ExitCode = 124 }
+        }
+        $rc = $proc.ExitCode
     } catch {
-        return @{ Output = "$_"; ExitCode = 255 }
-    } finally {
-        $ErrorActionPreference = $prevEAP
+        $msg = "SCP START FAILED: $_"
+        Write-Log $msg -Level "ERROR"
+        Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
+        return @{ Output = $msg; ExitCode = 255 }
     }
+    $so = Get-Content $tmpOut -Raw -ErrorAction SilentlyContinue
+    $se = Get-Content $tmpErr -Raw -ErrorAction SilentlyContinue
+    Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
+    $all = @()
+    if ($so) { $all += ($so -split "`r?`n") }
+    if ($se) { $all += ($se -split "`r?`n") }
+    $clean = @($all | Where-Object { $_ -and ($_.ToString() -notmatch '^(ssh\.exe|scp\.exe)\s*:') })
+    return @{ Output = (($clean | Out-String).Trim()); ExitCode = $rc }
 }
 
 # Uruchamia WIELOLINIJKOWY skrypt bash na VM bez problemow z cytowaniem.
@@ -1506,16 +1575,68 @@ function Invoke-DockerSetup {
     $sshTarget = "structura@$VmIp"
     $sshPort = 2222
 
+    # ----------------------------------------------------------------------
+    # KROK WSPOLNY (naprawiony blad): ZAPEWNIJ 'make' i Guest Additions
+    # ZANIM cokolwiek zaplanujemy dalej.
+    #
+    # Przy "Docker already installed" funkcja robila 'return $true' (patrz
+    # nizej) i POMIJALA te kroki. Skutek przy KONTYNUACJI na istniejacej VM
+    # (opcja 2 z menu): brak make -> ETAPY 6/7/8 padaja na "make: command not
+    # found", a folder wymiany dla n8n (vboxsf) nie istnieje przed startem
+    # kontenerow. Diagnoza z zawieszenia na ETAPIE 4:
+    #   "Docker already installed: docker version ..." <- ostatnia linia.
+    #
+    # Teraz sprawdzamy je ZAWSZE, niezaleznie od stanu Dockera. Sa
+    # idempotentne: jesli juz sa, tylko to potwierdzaja.
+    # ----------------------------------------------------------------------
+    $ensureCmd = @"
+        if command -v make >/dev/null 2>&1; then
+            echo "MAKE_OK"
+        else
+            echo "MAKE_INSTALLING"
+            sudo apt-get update -qq 2>/dev/null || true
+            sudo apt-get install -y make >/dev/null 2>&1 || true
+            if command -v make >/dev/null 2>&1; then echo "MAKE_OK"; else echo "MAKE_MISSING"; fi
+        fi
+        if lsmod | grep -q vboxsf; then
+            echo "GA_ALREADY"
+        else
+            sudo apt-get update -qq 2>/dev/null || true
+            sudo apt-get install -y virtualbox-guest-utils >/dev/null 2>&1 || true
+            sudo modprobe vboxsf 2>/dev/null || true
+            if lsmod | grep -q vboxsf; then echo "GA_INSTALLED_OK"; else echo "GA_INSTALL_FAILED"; fi
+        fi
+"@
+    $ensureResult = (Invoke-SshScript -Script $ensureCmd -Label "ensure-make-ga" -sshTarget $sshTarget -SshPort $sshPort).Output
+    if ($ensureResult -match 'MAKE_MISSING') {
+        # Twarda blokada: ETAPY 6/7/8 sa zbudowane na 'make ...'. Bez niego
+        # instalator szedl dalej i pokazywal falszywe sukcesy.
+        Write-Check "make NIE zainstalowany - ETAPY 6/7/8 niemozliwe" -Fail
+        Write-Host "    Output: $ensureResult" -ForegroundColor Red
+        return $false
+    }
+    if ($ensureResult -match 'MAKE_INSTALLING') {
+        Write-Check "make doinstalowany (brakowalo przy kontynuacji)"
+    } else {
+        Write-Check "make dostepny"
+    }
+    if ($ensureResult -match 'GA_INSTALL_FAILED') {
+        Write-Check "Guest Additions: vboxsf niedostepny - folder wspoldzielony moze nie dzialac" -Warn
+        Write-Log "GA install failed (ensure step): $ensureResult"
+    } else {
+        Write-Check "Guest Additions gotowe (vboxsf dostepny)"
+    }
+
     # Guard: check if Docker already installed
     Write-Host "  Checking Docker on VM..." -ForegroundColor White
     $dockerCheck = Invoke-WithRetry -Action {
-        $r = Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","ConnectTimeout=10","-o","UserKnownHostsFile=NUL",$sshTarget,"docker --version"))
+        $r = Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","ConnectTimeout=10","-o","UserKnownHostsFile=NUL",$sshTarget,"docker --version")) -TimeoutSec 60
         return $r.Output
     } -Description "Docker check via SSH" -MaxRetries 3
 
     if ($dockerCheck -match 'Docker version') {
         Write-Check "Docker already installed: $($dockerCheck.Trim())"
-        $composeCheck = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"docker compose version"))).Output
+        $composeCheck = (Invoke-Ssh -TimeoutSec 60 -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"docker compose version"))).Output
         if ($composeCheck -match 'Docker Compose version') {
             Write-Check "Docker Compose already installed"
             return $true
@@ -1566,7 +1687,7 @@ function Invoke-DockerSetup {
     }
 
     # Verify
-    $verifyResult = (Invoke-Ssh -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"docker --version && docker compose version && (command -v make >/dev/null && echo MAKE_OK || echo MAKE_MISSING)"))).Output
+    $verifyResult = (Invoke-Ssh -TimeoutSec 90 -SshArgs (@("-p","$sshPort","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL",$sshTarget,"docker --version && docker compose version && (command -v make >/dev/null && echo MAKE_OK || echo MAKE_MISSING)"))).Output
     if ($verifyResult -match 'MAKE_MISSING') {
         # Brak make = twarda BLOKADA. ETAP 6/7/8 sa zbudowane na 'make ...' i bez
         # niego instalator wczesniej szedl dalej, pokazujac falszywe sukcesy
