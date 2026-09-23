@@ -1242,7 +1242,25 @@ autoinstall:
     - chmod +x /target/root/vboxpostinstall.sh
     - curtin in-target --target=/target -- /bin/bash /root/vboxpostinstall.sh --direct
 '@
-        $tmpl = $tmpl.Replace('__SSH_PUBKEY__', $keyForYaml).Replace('SHUTDOWN_MODE', 'reboot')
+        # UWAGA KRYTYCZNA: 'poweroff', NIE 'reboot'.
+        #
+        # VirtualBox wykrywa ZAKONCZENIE instalacji po tym, ze maszyna sie
+        # WYLACZYLA. Dopiero wtedy odpina ISO i uznaje instalacje za skonczona.
+        # Stock szablon VirtualBoxa ma tu wlasnie 'poweroff'.
+        #
+        # Przy 'reboot' (nasza zmiana z Fali 1g) dzialo sie to:
+        #   1. instalator konczy -> VM RESTARTUJE zamiast sie wylaczyc
+        #   2. VBox NIE wykrywa konca -> NIE odpina ISO
+        #   3. boot order to 'boot1 dvd' -> VM bootuje INSTALATOR OD NOWA
+        #   4. instalator znowu konczy -> znowu reboot -> petla w nieskonczonosc
+        # Objaw na konsoli: ciagle ten sam ekran subiquity, VM "resetuje sie
+        # i idzie jak krew z nosa", a sshd nigdy nie wstaje (bo system nigdy
+        # nie zabootowal z dysku).
+        #
+        # Przy 'poweroff': VM sie wylacza, VBox odpina ISO i zglasza koniec,
+        # a nasz startvm PONIZEJ uruchamia ja z dysku - czyli z zainstalowanym
+        # systemem, ktory ma juz sshd i klucz z cloud-init.
+        $tmpl = $tmpl.Replace('__SSH_PUBKEY__', $keyForYaml).Replace('SHUTDOWN_MODE', 'poweroff')
         [System.IO.File]::WriteAllText($scriptTemplatePath, ($tmpl -replace "`r`n", "`n"), [System.Text.UTF8Encoding]::new($false))
         Write-Log "script-template (user-data) zapisany: $scriptTemplatePath"
 
@@ -1409,9 +1427,30 @@ function Get-VmIpAndSsh {
             Write-Host "        ssh: $lastProbeLine" -ForegroundColor DarkGray
         }
         if ($stateStr -eq 'poweroff' -or $stateStr -eq 'aborted') {
-            Write-Check "VM zatrzymala sie nieoczekiwanie (stan: $stateStr)" -Fail
-            $ErrorActionPreference = $prevEAP
-            return @{ VmExists = $true; VmIp = $null }
+            # UWAGA: 'poweroff' po zakonczeniu instalacji jest NORMALNY, a nie
+            # awaria. Wlasnie tak konczy sie instalacja: subiquity robi poweroff
+            # (shutdown: poweroff w template), VBox to wykrywa, odpina ISO i sam
+            # uruchamia VM ponownie Z DYSKU. Miedzy poweroff a restartem VBoxa
+            # mija kilka-kilkanascie sekund, wiec trafienie na ten stan w petli
+            # jest oczekiwane i NIE wolno go traktowac jako blad.
+            #
+            # Poprzednia wersja przerywala tu z -Fail "VM zatrzymala sie
+            # nieoczekiwanie", co przy poprawnym poweroffie ucinano instalacje.
+            #
+            # Rozroznienie: jesli VM stoi DLUGO (kilka iteracji), to znaczy, ze
+            # VBox jej nie podniosl - wtedy uruchamiamy ja sami.
+            $stoppedFor = if ($script:pwOffIter) { $i - $script:pwOffIter } else { 0 }
+            if (-not $script:pwOffIter) { $script:pwOffIter = $i }
+            if ($stoppedFor -ge 4) {
+                # ~2 min w poweroff = VBox nie podniosl VM. Probujemy raz.
+                $script:pwOffIter = $null
+                Write-Host "        VM stoi od ~2 min - uruchamiam z dysku..." -ForegroundColor DarkGray
+                Write-Log "Petla: VM w poweroff dlugo - reczne startvm z dysku"
+                & $vbox startvm $VM_NAME --type headless 2>&1 | Out-Null
+            }
+        } elseif ($script:pwOffIter) {
+            # VM znowu dziala - wyczysc licznik.
+            $script:pwOffIter = $null
         }
         Start-Sleep -Seconds 30
     }
