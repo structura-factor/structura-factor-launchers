@@ -214,10 +214,15 @@ if ($coreDeployKeyPath) {
 W-Log "DeployKey: $deployKeyPath"
 
 # --- RAM ---
+# UWAGA: prog zalezny od profilu VM wybieranego nizej. Absolutne minimum dla
+# HOSTA to 8 GB: VM bierze 3-8 GB, a Windows musi zachowac ~4 GB na siebie.
+# Wczesniej byl tu sztywny prog 16 GB i instalacja konczyla sie natychmiast
+# na komputerze 8 GB - mimo ze profil Mini (3 GB) miesci sie bez problemu.
 Write-Host "  > Sprawdzanie RAM..." -ForegroundColor Cyan
 $totalRAM = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
-if ($totalRAM -lt 16) {
-    Write-Host "  x Zbyt malo RAM: $totalRAM GB (min. 16 GB)" -ForegroundColor Red
+if ($totalRAM -lt 8) {
+    Write-Host "  x Zbyt malo RAM: $totalRAM GB (min. 8 GB)" -ForegroundColor Red
+    Write-Host "    VM potrzebuje min. 3 GB, a Windows musi zachowac ok. 4 GB." -ForegroundColor DarkGray
     exit 1
 }
 Write-Host "  v RAM: $totalRAM GB" -ForegroundColor Green
@@ -256,17 +261,38 @@ if ($EnableLUKS -and -not $LUKSPassword) {
 Write-Host ""
 Write-Host "  === Konfiguracja VM ===" -ForegroundColor Cyan
 Write-Host "  Wybierz moc maszyny wirtualnej:" -ForegroundColor White
-Write-Host "    1. Standard (4GB RAM, 2 vCPU) - dluzsza instalacja, mniej zasobow" -ForegroundColor DarkGray
-Write-Host "    2. Boost (8GB RAM, 6 vCPU) - szybsza instalacja, wiecej zasobow" -ForegroundColor DarkGray
+Write-Host "    1. Standard (4GB RAM, 2 vCPU) - wymaga 12GB RAM na komputerze" -ForegroundColor DarkGray
+Write-Host "    2. Boost    (8GB RAM, 6 vCPU) - najszybszy, wymaga 16GB RAM" -ForegroundColor DarkGray
+Write-Host "    3. Mini     (3GB RAM, 2 vCPU) - dla slabszych komputerow (8GB RAM)" -ForegroundColor DarkGray
 Write-Host ""
-$vmPower = Read-Host "  Wybierz (1/2, domyslnie 1)"
-if ($vmPower -eq "2") {
-    $VM_RAM = 8192
-    $VM_CPU = 6
-    Write-Host "  v Boost: 8GB RAM, 6 vCPU" -ForegroundColor Green
-} else {
-    Write-Host "  v Standard: 4GB RAM, 2 vCPU" -ForegroundColor Green
+if ($totalRAM -lt 12) {
+    Write-Host "  ! Ten komputer ma ${totalRAM}GB RAM - dostepny jest tylko profil Mini (3GB)." -ForegroundColor Yellow
+    Write-Host "    Wymagania: Mini=8GB, Standard=12GB, Boost=16GB (VM + zapas dla Windowsa)." -ForegroundColor DarkGray
 }
+$vmPower = Read-Host "  Wybierz (1/2/3, domyslnie 1)"
+
+# Wybor profilu NIE konczy instalacji przy zbyt duzym profilu - dopasowuje
+# go do mozliwosci komputera i mowi o tym wprost. Wczesniej bylo tu 'exit 1'
+# i uzytkownik na komputerze 8GB wybierajac "1" zostawal wyrzucony z
+# instalatora bez zadnej sciezki dalej (dokladnie: "zatrzymuje sie i
+# wychodzi calkiem"). Twarda blokada jest tylko wtedy, gdy NIE MIESCI SIE
+# nawet Mini (czyli host < 8GB) - to sprawdzone wyzej, przed menu.
+if ($vmPower -eq "2")      { $wantGB = 8; $wantCPU = 6 }
+elseif ($vmPower -eq "3")  { $wantGB = 3; $wantCPU = 2 }
+else                       { $wantGB = 4; $wantCPU = 2 }
+
+$maxGB = if ($totalRAM -ge 16) { 8 } elseif ($totalRAM -ge 12) { 4 } else { 3 }
+if ($wantGB -gt $maxGB) {
+    Write-Host "  ! Profil wymaga wiecej RAM niz masz (${totalRAM}GB)." -ForegroundColor Yellow
+    Write-Host "    Automatycznie wybieram najwiekszy mozliwy: ${maxGB}GB RAM." -ForegroundColor Yellow
+    $wantGB = $maxGB
+    $wantCPU = 2
+}
+
+$VM_RAM = $wantGB * 1024
+$VM_CPU = $wantCPU
+$profileName = switch ($wantGB) { 8 { "Boost" } 4 { "Standard" } 3 { "Mini" } default { "Custom" } }
+Write-Host "  v $profileName`: ${wantGB}GB RAM, $wantCPU vCPU" -ForegroundColor Green
 Write-Host ""
 
 # --- Media ---

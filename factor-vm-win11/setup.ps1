@@ -684,12 +684,32 @@ function Invoke-PreflightChecks {
     }
 
     # RAM
+    # UWAGA: prog zalezy od profilu VM. Wczesniej bylo tu sztywne 16 GB i
+    # instalacja PRZERYWALA sie (throw w ETAPIE 1) na komputerze 8 GB - mimo
+    # ze profil Mini (3 GB) dziala na takim sprzecie bez problemu.
+    # Progi MUSZA byc identyczne jak w Install-STRUCTURA-FACTOR.ps1 (menu
+    # wyboru profilu), inaczej uzytkownik przechodzi jedno sprawdzenie i pada
+    # na drugim bez zrozumienia dlaczego.
+    #   Mini     (3GB VM) -> host 8GB
+    #   Standard (4GB VM) -> host 12GB
+    #   Boost    (8GB VM) -> host 16GB
+    # Zapas (4-8GB) jest konieczny: bez niego host zaczyna swapowac i
+    # instalacja "wisi" zamiast dzialac.
     $totalRam = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
-    if ($totalRam -ge 16) {
+    $vmRamGB  = [math]::Round($VM_RAM / 1024)
+    switch ($vmRamGB) {
+        3       { $ramNeedGB = 8;  $profileName = "Mini" }
+        4       { $ramNeedGB = 12; $profileName = "Standard" }
+        8       { $ramNeedGB = 16; $profileName = "Boost" }
+        default { $ramNeedGB = $vmRamGB + 8; $profileName = "${vmRamGB}GB" }
+    }
+    if ($totalRam -ge $ramNeedGB) {
         $results.RamOK = $true
-        Write-Check "RAM: ${totalRam}GB (min 16GB)"
+        Write-Check "RAM: ${totalRam}GB (profil ${profileName}: VM ${vmRamGB}GB + zapas)"
     } else {
-        Write-Check "RAM: ${totalRam}GB (need 16GB+)" -Fail
+        Write-Check "RAM: ${totalRam}GB (profil ${profileName} wymaga ${ramNeedGB}GB)" -Fail
+        Write-Host "    Wybierz mniejszy profil VM (Mini = 3GB, wymaga 8GB hosta)" -ForegroundColor DarkGray
+        Write-Host "    albo uruchom instalacje na mocniejszym komputerze." -ForegroundColor DarkGray
     }
 
     # Disk
@@ -1329,6 +1349,15 @@ autoinstall:
         # Przy 'poweroff': VM sie wylacza, VBox odpina ISO i zglasza koniec,
         # a nasz startvm PONIZEJ uruchamia ja z dysku - czyli z zainstalowanym
         # systemem, ktory ma juz sshd i klucz z cloud-init.
+        # UWAGA: swap w autoinstall zostaje WYLACZONY (size: 0) - celowo.
+        # Powod: blad w tej sekcji = autoinstall przerywa sie w calosci i
+        # Ubuntu w ogole sie nie instaluje (ryzyko nie do przyjecia dla
+        # jednej opcjonalnej funkcji). Dodatkowo curtin liczy 'size' w
+        # BAJTACH, chyba ze podasz sufiks - 'size: 4096' daloby 4 KB swapu
+        # bez zadnego bledu (cicha awaria).
+        # Swapfile tworzymy PO instalacji, przez SSH, w ETAPIE 4
+        # (Invoke-DockerSetup -> ensure-swap) - tam blad jest odizolowany
+        # i widoczny w logu, a kontenery startuja juz z gotowym swapem.
         $tmpl = $tmpl.Replace('__SSH_PUBKEY__', $keyForYaml).Replace('SHUTDOWN_MODE', 'poweroff')
         [System.IO.File]::WriteAllText($scriptTemplatePath, ($tmpl -replace "`r`n", "`n"), [System.Text.UTF8Encoding]::new($false))
         Write-Log "script-template (user-data) zapisany: $scriptTemplatePath"
@@ -1606,6 +1635,34 @@ function Invoke-DockerSetup {
             sudo modprobe vboxsf 2>/dev/null || true
             if lsmod | grep -q vboxsf; then echo "GA_INSTALLED_OK"; else echo "GA_INSTALL_FAILED"; fi
         fi
+        # SWAPFILE: profil Mini (3GB RAM) nie pomiesci 8 kontenerow (postgres +
+        # n8n + hindsight + searxng + ...) w samym RAM. Bez swapu jadro zabija
+        # procesy (OOM killer) i kontenery leca w restart-loop, co wyglada jak
+        # "instalacja wisi". Autoinstall ma swap: size: 0 (celowo - blad tam
+        # przerywa CALA instalacje Ubuntu), wiec tworzymy go dopiero tutaj:
+        # po instalacji systemu, przed startem kontenerow.
+        # Rozmiar: 4G dla Mini, 2G dla wiekszych (mniejszy narzut na dysk).
+        if swapon --show 2>/dev/null | grep -q .; then
+            echo "SWAP_ALREADY `$(free -m | awk '/^Swap:/{print `$2}')MB"
+        else
+            SWAP_MB=2048
+            if [ `$(free -m | awk '/^Mem:/{print `$2}') -le 3500 ]; then SWAP_MB=4096; fi
+            sudo fallocate -l `${SWAP_MB}M /swapfile 2>/dev/null || \
+                sudo dd if=/dev/zero of=/swapfile bs=1M count=`${SWAP_MB} status=none 2>/dev/null || true
+            if [ -f /swapfile ]; then
+                sudo chmod 600 /swapfile
+                sudo mkswap /swapfile >/dev/null 2>&1 || true
+                sudo swapon /swapfile 2>/dev/null || true
+                grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+                if swapon --show 2>/dev/null | grep -q .; then
+                    echo "SWAP_CREATED `$(free -m | awk '/^Swap:/{print `$2}')MB"
+                else
+                    echo "SWAP_FAILED"
+                fi
+            else
+                echo "SWAP_FAILED"
+            fi
+        fi
 "@
     $ensureResult = (Invoke-SshScript -Script $ensureCmd -Label "ensure-make-ga" -sshTarget $sshTarget -SshPort $sshPort).Output
     if ($ensureResult -match 'MAKE_MISSING') {
@@ -1625,6 +1682,23 @@ function Invoke-DockerSetup {
         Write-Log "GA install failed (ensure step): $ensureResult"
     } else {
         Write-Check "Guest Additions gotowe (vboxsf dostepny)"
+    }
+    # Swap: przy profilu Mini (3GB) to warunek konieczny - bez niego 8
+    # kontenerow nie zmiesci sie w RAM i OOM killer rozlozy instalacje.
+    if ($ensureResult -match 'SWAP_FAILED') {
+        if ($VM_RAM -le 3072) {
+            Write-Check "Swap NIE powstal - przy profilu Mini to zablokuje kontenery" -Fail
+            Write-Host "    Sprawdz: sudo swapon --show, sudo free -m" -ForegroundColor DarkGray
+        } else {
+            Write-Check "Swap nie powstal (profil wiekszy - powinno dzialac bez)" -Warn
+        }
+        Write-Log "Swap FAILED (ensure step): $ensureResult"
+    } elseif ($ensureResult -match 'SWAP_CREATED') {
+        $swapInfo = ([regex]::Match($ensureResult, 'SWAP_CREATED (\d+)MB')).Groups[1].Value
+        Write-Check "Swap utworzony: ${swapInfo}MB"
+    } elseif ($ensureResult -match 'SWAP_ALREADY') {
+        $swapInfo = ([regex]::Match($ensureResult, 'SWAP_ALREADY (\d+)MB')).Groups[1].Value
+        Write-Check "Swap obecny: ${swapInfo}MB"
     }
 
     # Guard: check if Docker already installed
@@ -3830,7 +3904,10 @@ try {
     # Check critical failures
     if (-not $preflight.AdminOK) { throw "Admin rights required. Run as Administrator." }
     if (-not $preflight.InternetOK) { throw "Internet connection required." }
-    if (-not $preflight.RamOK) { throw "Insufficient RAM (need 16GB+)." }
+    if (-not $preflight.RamOK) {
+        $vmRamGB = [math]::Round($VM_RAM / 1024)
+        throw "Za malo RAM dla profilu ${vmRamGB}GB VM (potrzeba $($vmRamGB + 4)GB). Uzyj profilu Mini (3GB) albo mocniejszego komputera."
+    }
 
     # --- ETAP 2/8: Media sourcing ---
     Write-Etap -Number 2 -Name "Media sourcing (ISO + VBox installer - download lub OneDrive)"
