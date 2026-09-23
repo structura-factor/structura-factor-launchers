@@ -58,7 +58,7 @@ $SCRIPT_VERSION = "1.0"
 # instalatora byla uzyta. Bez tego kazdy log wygladal identycznie i nie dalo
 # sie powiedziec "czy to regresja, czy inny run".
 # UWAGA: aktualizuj przy kazdym commicie zmieniajacym setup.ps1.
-$SCRIPT_BUILD = "F38-20260923"
+$SCRIPT_BUILD = "F39-20260923"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
@@ -538,39 +538,57 @@ function Invoke-Scp {
         [string[]]$ScpArgs,
         [int]$TimeoutSec = 600
     )
-    # Timeout jak w Invoke-Ssh: 'scp' tez moze wisiec (np. VM zajeta albo
-    # siec NAT sie zaciela), a wtedy instalator stoi bez komunikatu.
-    $limit = if ($TimeoutSec -gt 0) { $TimeoutSec } else { 600 }
-    $tmpDir = $env:TEMP
-    if (-not $tmpDir -or -not (Test-Path -LiteralPath $tmpDir)) { $tmpDir = (Get-Location).Path }
-    $tmpOut = Join-Path $tmpDir ("scp-out-{0}.tmp" -f ([guid]::NewGuid().ToString('N')))
-    $tmpErr = Join-Path $tmpDir ("scp-err-{0}.tmp" -f ([guid]::NewGuid().ToString('N')))
+    # ----------------------------------------------------------------------
+    # UWAGA (naprawiony blad - REGRESJA z Fali 36).
+    #
+    # Bylo tu Start-Process + WaitForExit + odczyt $proc.ExitCode. Skutek na
+    # swiezej VM: scp FAKTYCZNIE kopiowal plik (dowod: pliki /tmp/structura-*.sh
+    # BYLY na VM), ale instalator raportowal porazke z PUSTYM komunikatem:
+    #     scp nie powiodl sie:
+    # i PRZERYWAL Invoke-SshScript - skrypt NIGDY nie zostal uruchomiony przez
+    # ssh. Dlatego docker.list i keyring nie istnialy, a Docker sie nie
+    # instalowal ("docker: command not found").
+    #
+    # Pulapka: $proc.ExitCode po WaitForExit(ms) moze byc $null (strumienie
+    # nieoproznione), a `$null -ne 0` w PowerShellu jest TRUE -> kod czytal
+    # SUKCES jako porazke. Sprawdzone: `$null -ne 0` -> True.
+    #
+    # ROZWIAZANIE: wracamy do wywolania przez operator & i $LASTEXITCODE
+    # (ta forma dzialala przed Fala 36 - run 16:38 przeszedl ETAPY 1-6).
+    # Zamiast timeoutu przez proces, ktory to psul, uzywamy opcji ssh:
+    #   ConnectTimeout  - nie wisi na nieosiagalnym hoscie
+    #   ServerAliveInterval/CountMax - nie wisi na zerwanym polaczeniu
+    #   BatchMode=yes   - nigdy nie czeka na input (haslo/potwierdzenie)
+    # Kopiowane pliki sa male (skrypty bash, klucze), wiec realny transfer
+    # to ulamki sekundy.
+    # ----------------------------------------------------------------------
+    $argsFull = @(
+        '-o', 'LogLevel=ERROR',
+        '-o', 'BatchMode=yes',
+        '-o', 'ConnectTimeout=20',
+        '-o', 'ServerAliveInterval=15',
+        '-o', 'ServerAliveCountMax=3'
+    ) + $ScpArgs
+
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
-        $proc = Start-Process -FilePath 'scp' -ArgumentList (@('-o','LogLevel=ERROR','-o','BatchMode=yes') + $ScpArgs) `
-            -NoNewWindow -PassThru -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr `
-            -ErrorAction Stop
-        if (-not $proc.WaitForExit($limit * 1000)) {
-            try { $proc.Kill() } catch { }
-            $msg = "SCP TIMEOUT po ${limit}s"
-            Write-Log $msg -Level "WARN"
-            Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
-            return @{ Output = "SCP_TIMEOUT: $msg"; ExitCode = 124 }
+        $out = & scp @argsFull 2>&1
+        $rc = $LASTEXITCODE
+        # $LASTEXITCODE bywa $null gdy proces nie wystartowal (np. brak scp).
+        # Traktujemy to jako blad, ale z CZYTELNYM komunikatem (nie pustym).
+        if ($null -eq $rc) {
+            $msg = "scp nie wystartowal (brak w PATH?) - output: $(($out | Out-String).Trim())"
+            Write-Log $msg -Level "ERROR"
+            return @{ Output = $msg; ExitCode = 255 }
         }
-        $rc = $proc.ExitCode
+        $clean = @($out | Where-Object { $_ -and ($_.ToString() -notmatch '^(ssh\.exe|scp\.exe)\s*:') } | ForEach-Object { $_.ToString() })
+        return @{ Output = (($clean | Out-String).Trim()); ExitCode = $rc }
     } catch {
-        $msg = "SCP START FAILED: $_"
-        Write-Log $msg -Level "ERROR"
-        Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
-        return @{ Output = $msg; ExitCode = 255 }
+        return @{ Output = "scp blad: $_"; ExitCode = 255 }
+    } finally {
+        $ErrorActionPreference = $prevEAP
     }
-    $so = Get-Content $tmpOut -Raw -ErrorAction SilentlyContinue
-    $se = Get-Content $tmpErr -Raw -ErrorAction SilentlyContinue
-    Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
-    $all = @()
-    if ($so) { $all += ($so -split "`r?`n") }
-    if ($se) { $all += ($se -split "`r?`n") }
-    $clean = @($all | Where-Object { $_ -and ($_.ToString() -notmatch '^(ssh\.exe|scp\.exe)\s*:') })
-    return @{ Output = (($clean | Out-String).Trim()); ExitCode = $rc }
 }
 
 # Uruchamia WIELOLINIJKOWY skrypt bash na VM bez problemow z cytowaniem.
@@ -1708,10 +1726,27 @@ function Invoke-DockerSetup {
         fi
 "@
     $ensureResult = (Invoke-SshScript -Script $ensureCmd -Label "ensure-make-ga" -sshTarget $sshTarget -SshPort $sshPort).Output
-    if ($ensureResult -match 'MAKE_MISSING') {
-        # Twarda blokada: ETAPY 6/7/8 sa zbudowane na 'make ...'. Bez niego
-        # instalator szedl dalej i pokazywal falszywe sukcesy.
-        Write-Check "make NIE zainstalowany - ETAPY 6/7/8 niemozliwe" -Fail
+
+    # ----------------------------------------------------------------------
+    # NAJWAZNIEJSZE: sukces musi byc POTWIERDZONY, nie domniemany.
+    #
+    # Bylo: kazdy warunek sprawdzal tylko PORAZKE (MAKE_MISSING,
+    # GA_INSTALL_FAILED), a wszystko inne lecialo w 'else' = "sukces".
+    # Gdy Invoke-SshScript zwrocil "scp nie powiodl sie: " (PUSTY komunikat -
+    # skrypt nigdy nie zostal uruchomiony), zaden warunek porazki nie pasowal,
+    # wiec instalator wypisal:
+    #     v make dostepny
+    #     v Guest Additions gotowe
+    # ...mimo ze na VM sprawdzone przez SSH bylo: vboxsf=0, swap=0.
+    # FALSZYWY SUKCES - najgorszy rodzaj bledu, bo instalacja szla dalej
+    # i padala pozniej, daleko od przyczyny.
+    #
+    # Teraz: brak explicite potwierdzonego znacznika (MAKE_OK / GA_*) =
+    # traktujemy jako BLAD, z pelnym outputem do zdiagnozowania.
+    # ----------------------------------------------------------------------
+    $ensureOk = $ensureResult -match 'MAKE_OK'
+    if (-not $ensureOk) {
+        Write-Check "make: skrypt 'ensure' nie potwierdzil sukcesu" -Fail
         Write-Host "    Output: $ensureResult" -ForegroundColor Red
         return $false
     }
@@ -1720,9 +1755,9 @@ function Invoke-DockerSetup {
     } else {
         Write-Check "make dostepny"
     }
-    if ($ensureResult -match 'GA_INSTALL_FAILED') {
-        Write-Check "Guest Additions: vboxsf niedostepny - folder wspoldzielony moze nie dzialac" -Warn
-        Write-Log "GA install failed (ensure step): $ensureResult"
+    if (-not ($ensureResult -match 'GA_ALREADY|GA_INSTALLED_OK')) {
+        Write-Check "Guest Additions: brak potwierdzenia (vboxsf moze nie dzialac)" -Warn
+        Write-Log "GA nie potwierdzone (ensure step): $ensureResult"
     } else {
         Write-Check "Guest Additions gotowe (vboxsf dostepny)"
     }
