@@ -1766,7 +1766,7 @@ function Invoke-RepoAndAppdata {
         # bylby skasowany przy KAZDEJ aktualizacji repo - czyli plik klienta
         # zniknalby po pierwszym 'make update'. Dlatego nadpisujemy
         # SEARXNG_CONFIG_PATH w .env, zeby wskazywal na KOPIE w appdata
-        # (appdata nie jest pod kontrolą gita i nie jest czyszczone).
+        # (appdata nie jest pod kontrola gita i nie jest czyszczone).
         #
         # Kolejnosc: ten krok jest PRZED generate-secrets.sh, bo tamten
         # wstrzykuje sekret do pliku wskazanego przez SEARXNG_CONFIG_PATH.
@@ -2628,6 +2628,27 @@ function Install-VmAutostart {
     # UWAGA: zadanie musi dzialac jako SYSTEM, a nie "przy logowaniu" - klient
     # moze zostawic komputer wlaczony bez zalogowania sesji, a asystent ma
     # dzialac w tle.
+    #
+    # ========================================================================
+    # KRYTYCZNE (naprawiony blad - autostart NIE DZIALAL):
+    #
+    # VirtualBox trzyma rejestr maszyn w profilu UZYTKOWNIKA:
+    #     C:\Users\<user>\.VirtualBox\VirtualBox.xml
+    # Zadanie SYSTEM ma zupelnie inny profil (C:\Windows\System32\config\systemprofile),
+    # wiec `VBoxManage startvm "<nazwa>"` konczy sie bledem
+    #     "Could not find a registered machine named '<nazwa>'"
+    # - mimo ze VM istnieje i dziala dla zalogowanego uzytkownika.
+    # To jest CICHE: zadanie "przebiega pomyslnie", tylko nic nie robi.
+    #
+    # ROZWIAZANIE: przekazac SYSTEMOWI sciezke do rejestru uzytkownika przez
+    # zmienna VBOX_USER_HOME. Zadanie nie dziedziczy zmiennych srodowiskowych
+    # uzytkownika (SYSTEM nie ma ich w ogole), dlatego NIE da sie tego zalatwic
+    # zmienna systemowa - trzeba ja ustawic W SAMYM ZADANIU, opakowujac
+    # polecenie w cmd /c "set VBOX_USER_HOME=... && VBoxManage ...".
+    #
+    # Sprawdzone empirycznie na kliencie: VM nie startowala sama po restarcie
+    # Windowsa, trzeba ja bylo wlaczac recznie.
+    # ========================================================================
     $vbox = Get-VBoxManage
     if (-not $vbox) {
         Write-Check "Autostart VM: VBoxManage nie znaleziony" -Warn
@@ -2636,10 +2657,20 @@ function Install-VmAutostart {
 
     $vboxDir = Split-Path $vbox -Parent
 
-    # VBoxSVC/VBoxSDS musza byc uruchomione zanim ruszy VM. VirtualBox
-    # rejestruje wlasne uslugi przy instalacji, ale dla pewnosci dajemy delay.
+    # Sciezka do profilu VirtualBox TWORCY VM (instalator dziala jako uzytkownik).
+    # To tu VirtualBox.xml trzyma rejestr maszyn widziany przez VBoxManage.
+    $vboxUserHome = Join-Path $env:USERPROFILE ".VirtualBox"
+
+    if (-not (Test-Path (Join-Path $vboxUserHome "VirtualBox.xml"))) {
+        Write-Check "Autostart VM: brak $vboxUserHome\VirtualBox.xml - autostart moze nie zadzialac" -Warn
+        Write-Log "Autostart VM: brak rejestru w $vboxUserHome (VBOX_USER_HOME)" -Level "WARN"
+    }
+
     $taskName = "STRUCTURA-VM-Autostart"
-    $scriptCmd = "`"$vboxDir\VBoxManage.exe`" startvm `"$VmName`" --type headless"
+
+    # cmd /c potrzebne, zeby ustawic VBOX_USER_HOME TYLKO dla tego polecenia.
+    # Cudzyslowy wokol sciezek sa konieczne - zawieraja spacje.
+    $scriptCmd = "cmd /c `"set VBOX_USER_HOME=$vboxUserHome&& `"`"$vboxDir\VBoxManage.exe`"`" startvm `"`"$VmName`"`" --type headless`""
 
     # Usun poprzednie zadanie (idempotencja przy re-runie)
     $null = & schtasks /Delete /TN $taskName /F 2>&1
@@ -2653,6 +2684,35 @@ function Install-VmAutostart {
 
     Write-Check "Autostart VM: zadanie '$taskName' (start systemu, 30 s, bez logowania)"
     Write-Log "Autostart VM: schtasks /Create /TN $taskName /SC ONSTART /RU SYSTEM /DELAY 0000:30"
+    Write-Log "Autostart VM: VBOX_USER_HOME=$vboxUserHome (bez tego SYSTEM nie widzi rejestru VM)"
+
+    # --- Weryfikacja: czy zadanie REALNIE dziala? ---
+    # Samo utworzenie zadania (schtasks exit 0) NIE dowodzi, ze autostart
+    # zadziala - poprzednia wersja wlasnie tak wygladala "poprawnie",
+    # a nie startowala VM. Dlatego uruchamiamy zadanie RAZ TERAZ i sprawdzamy
+    # czy VM faktycznie wstala.
+    #
+    # UWAGA: w trakcie instalacji VM zwykle JUZ dziala - wtedy test jest
+    # niemiarodajny ("dziala, bo juz chodzila"). Dlatego najpierw sprawdzamy
+    # stan, a wynik testu traktujemy jako sygnal, nie dowod.
+    $null = & schtasks /Run /TN $taskName 2>&1
+    Start-Sleep -Seconds 8
+
+    $runningAsSystem = $false
+    $prevEAP2 = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $vmList = & $vbox list runningvms 2>&1 | Out-String
+    $ErrorActionPreference = $prevEAP2
+    if ($vmList -match [regex]::Escape($VmName)) { $runningAsSystem = $true }
+
+    if ($runningAsSystem) {
+        Write-Check "Autostart VM: zweryfikowany (VM dziala po uruchomieniu zadania)"
+    } else {
+        Write-Check "Autostart VM: zadanie utworzone, ale VM nie wstala - sprawdz recznie" -Warn
+        Write-Log "Autostart VM: weryfikacja nieudana. Sprawdz:" -Level "WARN"
+        Write-Log "  schtasks /Query /TN $taskName /V /FO LIST" -Level "WARN"
+        Write-Log "  $vboxUserHome\VirtualBox.xml (czy istnieje)" -Level "WARN"
+    }
 
     # Dodatkowo: VBoxManage setproperty + autostart VBox wlasnym mechanizmem
     # (dziala gdy VM ma wlaczony autostart w VirtualBox Manager).
