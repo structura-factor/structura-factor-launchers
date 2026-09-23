@@ -53,6 +53,12 @@ $ErrorActionPreference = 'Stop'
 # ============================================================================
 
 $SCRIPT_VERSION = "1.0"
+# BUILD: identyfikator tej konkretnej wersji skryptu. Wypisywany na starcie
+# i do logu, zeby z JEDNEGO spojrzenia na log bylo wiadomo, ktora wersja
+# instalatora byla uzyta. Bez tego kazdy log wygladal identycznie i nie dalo
+# sie powiedziec "czy to regresja, czy inny run".
+# UWAGA: aktualizuj przy kazdym commicie zmieniajacym setup.ps1.
+$SCRIPT_BUILD = "F38-20260923"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
@@ -1619,6 +1625,43 @@ function Invoke-DockerSetup {
     # idempotentne: jesli juz sa, tylko to potwierdzaja.
     # ----------------------------------------------------------------------
     $ensureCmd = @"
+        # ------------------------------------------------------------------
+        # CZEKAJ NA APT/DPKG (naprawiony blad - REGRESJA).
+        #
+        # Objaw: na swiezej VM instalator padal na ETAPIE 4 z
+        #   "Docker verification failed / docker: command not found"
+        # mimo ze wczesniej (ten sam kod sciezki instalacji) dzialal.
+        #
+        # Przyczyna: na swiezo zainstalowanym Ubuntu dziala w tle
+        # unattended-upgrades / apt-daily, ktore TRZYMA BLOKADE dpkg.
+        # Ten blok (make + Guest Additions) wykonuje 'apt-get install'
+        # PRZED instalacja Dockera, wiec:
+        #   1. unattended-upgrades trzyma lock
+        #   2. nasz apt czeka/zawodzi
+        #   3. Docker install (pozniej) tez nie przechodzi
+        # Wczesniej Docker byl PIERWSZY, gdy lock byl jeszcze wolny.
+        #
+        # Rozwiazanie: poczekaj az dpkg/apt beda wolne (do 5 min), a jako
+        # ostatecznosc usun tylko pliki blokad (nie zabijaj procesow apt).
+        # ------------------------------------------------------------------
+        echo "STEP_START wait-dpkg"
+        waited=0
+        while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+              sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+            if [ "`$waited" -ge 300 ]; then
+                echo "WAIT_DPKG_TIMEOUT (po 300s - kontynuuje mimo blokady)"
+                break
+            fi
+            sleep 5
+            waited=`$((waited + 5))
+        done
+        if [ "`$waited" -gt 0 ]; then echo "WAIT_DPKG_OK (czekalem `${waited}s)"; else echo "WAIT_DPKG_OK (lock byl wolny)"; fi
+        # cloud-init czesto konczy prace PO pierwszym starcie - daj mu dokonczyc.
+        if command -v cloud-init >/dev/null 2>&1; then
+            sudo cloud-init status --wait >/dev/null 2>&1 || true
+            echo "CLOUD_INIT_DONE"
+        fi
+
         if command -v make >/dev/null 2>&1; then
             echo "MAKE_OK"
         else
@@ -1720,44 +1763,94 @@ function Invoke-DockerSetup {
     Write-Host "  Installing Docker on VM (via SSH)..." -ForegroundColor White
 
     # Run Docker installation script
+    #
+    # UWAGA (naprawiony blad): bylo tu 'set -e' na poczatku. Skutek: PIERWSZY
+    # blad przerywal caly skrypt BEZ ZADNEGO KOMUNIKATU - instalator pokazywal
+    # tylko "Docker verification failed / docker: command not found", a
+    # PRZYCZYNA (np. brak internetu na VM, blad repo, nieudany curl GPG)
+    # zostawala niewidoczna. Diagnoza byla niemozliwa - trzeba bylo zgadywac.
+    # Teraz: kazdy krok ma wlasna etykiete STEP_*, a niepowodzenie mowi wprost
+    # KTORY to krok i jaki byl blad. Skrypt NIE przerywa sie po cichu.
     $installCmd = @"
-        set -e
-        sudo apt-get update -y
+        # Czekaj na zwolnienie blokady dpkg/apt (unattended-upgrades na swiezej
+        # VM potrafi ja trzymac kilka minut). Bez tego 'docker-ce' nie instaluje
+        # sie, a objaw to tylko "docker: command not found" bez przyczyny.
+        echo "STEP_START wait-dpkg"
+        waited=0
+        while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+              sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+            if [ "`$waited" -ge 300 ]; then echo "WAIT_DPKG_TIMEOUT"; break; fi
+            sleep 5
+            waited=`$((waited + 5))
+        done
+        echo "WAIT_DPKG_DONE `${waited}s"
+
+        echo "STEP_START apt-update"
+        sudo apt-get update -y 2>&1 | tail -5 || echo "STEP_FAIL apt-update"
         # make: NIE ma go w Ubuntu 24.04 live-server (sprawdzone na manifescie ISO:
         # 707 pakietow, zero dopasowan '^make'/'build-essential'; docker-ce go nie
         # ciagnie - Depends to containerd.io/iptables/libseccomp2/libc6/libsystemd0).
         # Bez make caly ETAP 6/7/8 pada: "make: command not found" - a instalator
         # raportowal to tylko jako WARN, wiec szedl dalej i pokazywal falszywe sukcesy.
-        sudo apt-get install -y ca-certificates curl gnupg lsb-release make
+        echo "STEP_START base-packages"
+        sudo apt-get install -y ca-certificates curl gnupg lsb-release make 2>&1 | tail -5 || echo "STEP_FAIL base-packages"
+
+        echo "STEP_START docker-key"
         sudo install -m 0755 -d /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        sudo chmod a+r /etc/apt/keyrings/docker.gpg
+        # curl z retry i jawnym bledem - przy slabym NAT na swiezej VM pierwsze
+        # polaczenie czesto nie dochodzi.
+        curl -fsSL --retry 5 --retry-delay 3 --retry-connrefused \
+            https://download.docker.com/linux/ubuntu/gpg -o /tmp/docker.gpg \
+            || { echo "STEP_FAIL docker-key-curl (brak internetu na VM?)"; }
+        if [ -s /tmp/docker.gpg ]; then
+            sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg < /tmp/docker.gpg 2>/dev/null || echo "STEP_FAIL gpg-dearmor"
+            sudo chmod a+r /etc/apt/keyrings/docker.gpg
+            echo "STEP_OK docker-key"
+        else
+            echo "STEP_FAIL docker-key (plik GPG pusty/brak)"
+        fi
+
+        echo "STEP_START docker-repo"
         echo "deb [arch=`$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu `$(. /etc/os-release && echo "`$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        sudo apt-get update -y
-        sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        sudo apt-get update -y 2>&1 | tail -5 || echo "STEP_FAIL docker-repo-update"
+
+        echo "STEP_START docker-install"
+        sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin 2>&1 | tail -15 || echo "STEP_FAIL docker-install"
         sudo usermod -aG docker structura
-        sudo systemctl enable docker
-        sudo systemctl start docker
-        docker --version
-        docker compose version
+        sudo systemctl enable docker 2>&1 || true
+        sudo systemctl start docker 2>&1 || true
+
+        echo "STEP_START verify"
+        docker --version 2>&1 || echo "DOCKER_CMD_MISSING"
+        docker compose version 2>&1 || echo "COMPOSE_CMD_MISSING"
         # make jest KRYTYCZNE: ETAP 6/7/8 wolaja 'make secrets-check', 'make deploy',
         # 'make npm-setup', 'make init-hindsight'. Bez niego instalacja nie ma prawa
         # dojsc do konca - lepiej zatrzymac sie tu z jasnym komunikatem.
         if command -v make >/dev/null 2>&1; then
-            echo "MAKE_OK `$(make --version | head -1)"
+            echo "STEP_OK make"
         else
-            echo "MAKE_MISSING"
-            exit 1
+            echo "STEP_FAIL make"
         fi
 "@
 
     $installResult = Invoke-WithRetry -Action {
         $r = Invoke-SshScript -Script $installCmd -Label "docker-install" -sshTarget $sshTarget -SshPort $sshPort
+        # Invoke-SshScript zwraca wynik i NIE rzuca wyjatkiem, wiec poprzedni
+        # Invoke-WithRetry NIE PONAWIAL (retry dziala tylko na catch). Rzucamy
+        # sami, gdy skrypt raportuje niepowodzenie kroku - wtedy retry ma sens.
+        if ($r.Output -match 'STEP_FAIL|DOCKER_CMD_MISSING') {
+            throw "docker-install: krok nie powiodl sie ($(($r.Output -split "`n" | Where-Object { $_ -match 'STEP_FAIL|MISSING' }) -join '; '))"
+        }
         return $r.Output
     } -Description "Docker install via SSH" -MaxRetries 3
 
-    if ($PSBoundParameters.ContainsKey("Verbose")) {
-        Write-Host $installResult -ForegroundColor DarkGray
+    # ZAWSZE pokaz wynik instalacji (nie tylko w -Verbose). Wczesniej output
+    # byl ukryty, wiec przy awarii uzytkownik widzial tylko "docker: command
+    # not found" - bez zadnej informacji KTORY krok padl i dlaczego.
+    # To kosztowalo nas slepa uliczke przy diagnozie.
+    if ($installResult -match 'STEP_FAIL|DOCKER_CMD_MISSING|COMPOSE_CMD_MISSING') {
+        Write-Host "    --- kroki instalacji Dockera ---" -ForegroundColor DarkGray
+        ($installResult -split "`n") | Where-Object { $_ -match 'STEP_|FAIL|MISSING|E:|W:' } | Select-Object -First 20 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     }
 
     # Verify
@@ -1768,6 +1861,31 @@ function Invoke-DockerSetup {
         # ('v NPM configured', 'v Hindsight banks initialized').
         Write-Check "make NIE zainstalowany - ETAP 6/7/8 niemozliwe" -Fail
         Write-Host "    Output: $verifyResult" -ForegroundColor Red
+        return $false
+    }
+    # DIAGNOSTYKA przy nieudanej instalacji Dockera. Wczesniej byl tu tylko
+    # "Output: bash: line 1: docker: command not found" - co mowi CO jest zle,
+    # ale NIC o przyczynie. Teraz pokazujemy stan apt, blokady dpkg i log
+    # instalacji, zeby dalo sie zdiagnozowac bez zgadywania.
+    if (-not ($verifyResult -match 'Docker version')) {
+        Write-Check "Docker NIE zainstalowany - zbieram diagnostyke" -Fail
+        $diagCmd = @"
+            echo "--- DOCKER DIAG ---"
+            echo "docker: `$(command -v docker || echo BRAK)"
+            echo "repo: `$(ls /etc/apt/sources.list.d/docker.list 2>/dev/null || echo BRAK)"
+            echo "keyring: `$(ls -la /etc/apt/keyrings/docker.gpg 2>/dev/null || echo BRAK)"
+            echo "--- dpkg lock ---"
+            sudo fuser -v /var/lib/dpkg/lock-frontend 2>&1 | head -5 || echo "lock wolny"
+            echo "--- ostatnie bledy apt ---"
+            sudo tail -20 /var/log/apt/term.log 2>/dev/null || echo "brak term.log"
+            echo "--- cloud-init ---"
+            sudo cloud-init status 2>/dev/null || echo "brak cloud-init"
+            echo "--- DOCKER DIAG END ---"
+"@
+        $diag = (Invoke-SshScript -Script $diagCmd -Label "docker-diag" -sshTarget $sshTarget -SshPort $sshPort).Output
+        ($diag -split "`n") | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        Write-Host "    --- kroki instalacji ---" -ForegroundColor DarkGray
+        ($installResult -split "`n") | Where-Object { $_ -match 'STEP_|FAIL|MISSING|E:' } | Select-Object -First 25 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
         return $false
     }
     if ($verifyResult -match 'Docker version' -and $verifyResult -match 'Docker Compose version' -and $verifyResult -match 'MAKE_OK') {
@@ -3892,6 +4010,10 @@ Start-Transcript -Path $transcriptFile -Append -ErrorAction SilentlyContinue | O
 
 try {
     # Initial banner
+    # Wersja instalatora na starcie - patrz na to w logu, zeby wiedziec ktora
+    # wersja byla uzyta. Bez tego kazdy log wygladal identycznie.
+    Write-Host "  Instalator: build $SCRIPT_BUILD (v$SCRIPT_VERSION)" -ForegroundColor DarkGray
+    Write-Log "=== INSTALATOR BUILD $SCRIPT_BUILD (v$SCRIPT_VERSION) ==="
     Write-Banner -Title "STRUCTURA AI - FACTOR" -Subtitle "Personal Assistant dla kancelarii prawnej" -ClientName $Client -Etap "1/$TOTAL_ETAPY - Pre-flight checks"
 
     # Install deploy key
