@@ -2624,12 +2624,23 @@ Environment=HOME=/home/structura
         # Bylo: 'HERMESEOF' zamykalo sie dopiero po calym bloku bash nizej,
         # wiec do PLIKU hermes.service trafialo nie tylko [Unit]/[Service],
         # ale TAKZE kod obliczajacy hasla i wywolania systemctl:
-        #     HERMES_PY="..."
-        #     DASH_HASH="$(...)"
-        #     sudo tee .../10-bind.conf << DROPINEOF
-        #     DASHBOARD_HASH_FAILED / exit 1
-        #     ... oraz 'DROPINEOF' jako literalny tekst
+        #   - przypisania HERMES_PY i DASH_HASH (obliczanie hasha hasla)
+        #   - 'sudo tee' drop-inu z haslem
+        #   - DASHBOARD_HASH_FAILED / exit 1
+        #   - wywolania systemctl daemon-reload
+        #   - literalny tekst zamkniecia zagniezdzonego here-stringa
+        #   - 'Restart=on-failure' i reszta PO 'systemctl daemon-reload'
         # Systemd odrzuca taki unit -> "hermes.service NIE wystartowala".
+        #
+        # UWAGA (drugi blad, ta sama fala): w TYM komentarzu bylo doslownie
+        # napisane 'DASH_HASH' + znak dolara + nawias z wielokropkiem.
+        # Komentarz jedzie przez here-string PowerShell, ktory JEST
+        # INTERPOLOWANY - PowerShell wykonal ten fragment LOKALNIE na
+        # Windowsie i wstawil wynik (puste) do tekstu skryptu. Skutek:
+        # uszkodzona linia i blad
+        #   "The term '...' is not recognized as the name of a cmdlet..."
+        # To regula nr 10 ze skilla: w here-stringach PowerShell escapowac
+        # KAZDY znak dolara. Dlatego ten komentarz nie zawiera ich wcale.
         #
         # ROZWIAZANIE: unit zamkniety od razu po [Install], a caly kod
         # (hasla, drop-in, systemctl) jest POZA here-stringiem.
