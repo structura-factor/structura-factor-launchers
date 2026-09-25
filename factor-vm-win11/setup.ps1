@@ -58,7 +58,7 @@ $SCRIPT_VERSION = "1.0"
 # instalatora byla uzyta. Bez tego kazdy log wygladal identycznie i nie dalo
 # sie powiedziec "czy to regresja, czy inny run".
 # UWAGA: aktualizuj przy kazdym commicie zmieniajacym setup.ps1.
-$SCRIPT_BUILD = "F40-20260923"
+$SCRIPT_BUILD = "F41-20260925"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
@@ -2899,6 +2899,22 @@ function Install-NativeHermes {
     # ------------------------------------------------------------------
     $serviceCmd = @"
         set -e
+
+        # ------------------------------------------------------------------
+        # HERMES_HOME MUSI byc ustawione TUTAJ (naprawiony blad).
+        #
+        # Invoke-SshScript uruchamia kazdy here-string w OSOBNEJ sesji SSH,
+        # wiec zmienne z poprzednich skryptow (configCmd) NIE przechodza.
+        # Bez tej linii "$HERMES_HOME/.env" stawalo sie "/.env":
+        #     grep -q '^DASHBOARD_ADMIN_PASSWORD=' "/.env"
+        #     -> /.env: Permission denied
+        # a poniewaz skrypt ma 'set -e', PRZERYWAL sie w tym miejscu:
+        #   - nie zapisal loginu do .env
+        #   - nie wykonal 'systemctl restart hermes'
+        # Skutek: 'Usluga hermes.service NIE wystartowala' i instalacja padala
+        # na ETAPIE 7 - mimo ze unit systemd i drop-in byly poprawne.
+        # ------------------------------------------------------------------
+        HERMES_HOME="`$HOME/.hermes"
 
         # Znajdz binarke (ta sama logika co przy instalacji)
         HERMES_BIN=""
