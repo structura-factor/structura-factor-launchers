@@ -24,6 +24,11 @@
       "function": "Invoke-RepoAndAppdata",
       "hash": "dfe9826a91caf9de",
       "evidence": "VM: oba repo, .env, git@github-core/client authenticated"
+    },
+    "6": {
+      "function": "Invoke-ContainerDeployment",
+      "hash": "edf2557c76cd5074",
+      "evidence": "9/9 kontenerow Up, 7 healthy (portainer+n8n-runners bez healthchecka z zalozenia), deploy complete na zywej VM"
     }
   }
 }
