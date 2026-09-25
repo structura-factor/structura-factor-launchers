@@ -1,0 +1,29 @@
+{
+  "stages": {
+    "1": {
+      "function": "Invoke-PreflightChecks",
+      "hash": "8f5b966c91ac2e07",
+      "evidence": "log: wszystkie checki v, blokada <8GB"
+    },
+    "2": {
+      "function": "Invoke-MediaSourcing",
+      "hash": "94933c514d3d6257",
+      "evidence": "log: OneDrive SHA256 OK + pobieranie HTTP 200"
+    },
+    "3": {
+      "function": "Invoke-VMCreation",
+      "hash": "acfe88150f2f7bd5",
+      "evidence": "VM: Ubuntu 24.04.5 LTS, kernel 6.8.0-142, SSH kluczem"
+    },
+    "4": {
+      "function": "Invoke-DockerSetup",
+      "hash": "f7d2178d6050955e",
+      "evidence": "VM: docker 29.8.1, make 4.3, vboxsf=2, swap 2047MB, docker active"
+    },
+    "5": {
+      "function": "Invoke-RepoAndAppdata",
+      "hash": "dfe9826a91caf9de",
+      "evidence": "VM: oba repo, .env, git@github-core/client authenticated"
+    }
+  }
+}
