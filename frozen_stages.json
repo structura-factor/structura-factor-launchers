@@ -29,6 +29,11 @@
       "function": "Invoke-ContainerDeployment",
       "hash": "edf2557c76cd5074",
       "evidence": "9/9 kontenerow Up, 7 healthy (portainer+n8n-runners bez healthchecka z zalozenia), deploy complete na zywej VM"
+    },
+    "7": {
+      "function": "Install-NativeHermes",
+      "hash": "112875323fd3a19e",
+      "evidence": "systemd active+enabled, unit bez smieci, drop-in 10-bind.conf, /health HTTP 302, hermes binarny przez uv"
     }
   }
 }

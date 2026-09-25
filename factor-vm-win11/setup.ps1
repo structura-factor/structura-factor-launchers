@@ -58,7 +58,7 @@ $SCRIPT_VERSION = "1.0"
 # instalatora byla uzyta. Bez tego kazdy log wygladal identycznie i nie dalo
 # sie powiedziec "czy to regresja, czy inny run".
 # UWAGA: aktualizuj przy kazdym commicie zmieniajacym setup.ps1.
-$SCRIPT_BUILD = "F39-20260923"
+$SCRIPT_BUILD = "F40-20260923"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
@@ -2964,7 +2964,7 @@ Environment=HOME=/home/structura
 
         [Install]
         WantedBy=multi-user.target
-        HERMESEOF
+HERMESEOF
 
         # ==================================================================
         # UWAGA (naprawiony blad - here-string zamykal sie ZA POZNO)
@@ -3002,7 +3002,7 @@ Environment=HOME=/home/structura
         [ -x "`$HERMES_PY" ] || HERMES_PY="`$HERMES_BIN"
         DASH_USER="asystent"
         DASH_PASS_PLAIN="`$(`$HERMES_PY -c 'import secrets; print(secrets.token_urlsafe(12))')"
-        DASH_HASH="`$(`$HERMES_PY -c \"from plugins.dashboard_auth.basic import hash_password; print(hash_password('`$DASH_PASS_PLAIN'))\" 2>/dev/null)"
+        DASH_HASH="`$(`$HERMES_PY -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('`$DASH_PASS_PLAIN'))" 2>/dev/null)"
         DASH_SECRET="`$(`$HERMES_PY -c 'import secrets; print(secrets.token_hex(32))')"
         if [ -z "`$DASH_HASH" ]; then echo "DASHBOARD_HASH_FAILED"; exit 1; fi
 
@@ -3015,7 +3015,7 @@ Environment=HOME=/home/structura
         Environment=HERMES_DASHBOARD_BASIC_AUTH_SECRET=`$DASH_SECRET
         ExecStart=
         ExecStart=`$HERMES_BIN dashboard --host 0.0.0.0 --port 9119 --no-open --skip-build
-        DROPINEOF
+DROPINEOF
 
         # Haslo do .env - klient je odczyta, zeby sie zalogowac do dashboardu.
         if ! grep -q '^DASHBOARD_ADMIN_PASSWORD=' "`$HERMES_HOME/.env" 2>/dev/null; then
