@@ -34,6 +34,11 @@
       "function": "Install-NativeHermes",
       "hash": "112875323fd3a19e",
       "evidence": "systemd active+enabled, unit bez smieci, drop-in 10-bind.conf, /health HTTP 302, hermes binarny przez uv"
+    },
+    "8": {
+      "function": "Invoke-PostSetup",
+      "hash": "dad1fec766c3b0a6",
+      "evidence": "UFW active+SSH_OK, fail2ban active+jail OK, cron pg_dump w crontab structura, SMB_UP, motyw aether-sawaryn, GH38238 patch OK, HERMES_RESTARTED"
     }
   }
 }

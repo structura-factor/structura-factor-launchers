@@ -12,16 +12,40 @@ Fala 36 dodała blok `ensure` przed instalacją Dockera → regresja w ETAPIE 4
 
 ## STATUS
 
+**WSZYSTKIE 8 ETAPÓW ZAMKNIĘTE** — zweryfikowane przez SSH na żywej VM
+(2026-09-25), nie z logów instalatora. Blokowane przez `make check-frozen`.
+
 | # | Etap | Status | Dowód | Data |
 |---|------|--------|-------|------|
 | 1 | Pre-flight (RAM, dysk, VBox, internet) | **ZAMKNIĘTY** | log: wszystkie checki `v`, blokada przy <8GB | 2026-09-23 |
 | 2 | Media sourcing (ISO + VBox) | **ZAMKNIĘTY** | log: `OneDrive (SHA256 OK)` + pobieranie z sieci HTTP 200 | 2026-09-23 |
 | 3 | VM creation + Ubuntu unattended | **ZAMKNIĘTY** | VM: `Ubuntu 24.04.5 LTS`, kernel 6.8.0-142, SSH kluczem | 2026-09-23 |
-| 4 | Docker + make + Guest Additions + swap | **ZAMKNIĘTY** | VM: `docker 29.8.1`, `compose v5.5.1`, `GNU Make 4.3`, `vboxsf=2`, `swap 2047MB` | 2026-09-23 |
+| 4 | Docker + make + Guest Additions + swap | **ZAMKNIĘTY** | VM: `docker 29.8.1`, `make 4.3`, `vboxsf=2`, `swap 2047MB` | 2026-09-23 |
 | 5 | Repo clone + klucze + appdata | **ZAMKNIĘTY** | VM: oba repo, `.env`, `git@github-core` i `-client` → `authenticated` | 2026-09-23 |
-| 6 | Containers (make deploy + health) | **OTWARTY** | — | — |
-| 7 | Hermes natywnie + usługa systemd | **OTWARTY** | — | — |
-| 8 | Hosts + NAT + folder współdzielony | **OTWARTY** | — | — |
+| 6 | Containers (make deploy + health) | **ZAMKNIĘTY** | VM: 9/9 Up, 7 healthy (portainer+n8n-runners bez healthchecka), `Deploy complete` | 2026-09-25 |
+| 7 | Hermes natywnie + usługa systemd | **ZAMKNIĘTY** | VM: `systemd active+enabled`, unit bez śmieci, `/health` HTTP 302, `HERMES_ACTIVE` | 2026-09-25 |
+| 8 | Post-setup (UFW, fail2ban, cron, SMB, motyw) | **ZAMKNIĘTY** | VM: `UFW active`+`SSH_OK`, `F2B_ACTIVE`+`JAIL_OK`, cron pg_dump w crontab, `SMB_UP`, motyw `aether-sawaryn`, GH38238 patch | 2026-09-25 |
+
+---
+
+## DWA BŁĘDY, KTÓRE BLOKOWAŁY ETAP 7 OD TYGODNIA (Fala 40)
+
+**1. Here-doc z wciętym zamykającym delimiterem.**
+```
+linia 2967:  '        HERMESEOF'    <- 8 spacji!
+linia 3018:  '        DROPINEOF'    <- 8 spacji!
+```
+Bash wymaga delimitera na **kolumnie 0**. `<<-` zjada tylko TABULATORY, nie spacje.
+Skutek: here-doc się nie domykał → zawartość leciała jako komendy → unit systemd
+pusty → usługa nie wstawała. Wykrywacz: `scripts/check_heredocs.py`.
+
+**2. Podwójny escape cudzysłowów** (regresja z Fali 35).
+```
+Fala 16 (działało):  -c "from plugins...
+Fala 35 (zepsułem):  -c \"from plugins...    <- backslash trafia DOSŁOWNIE do bash
+```
+W here-stringu PowerShell `@"..."@` backslash **nie escapuje**. Porównanie
+z ostatnią działającą wersją (`git show 9023b51:...`) pokazało różnicę od razu.
 
 ---
 
