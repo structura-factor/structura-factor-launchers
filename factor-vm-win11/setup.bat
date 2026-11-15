@@ -1,11 +1,11 @@
 @echo off
 REM ============================================================================
-REM  setup.bat - Wrapper dla setup.ps1 (STRUCTURA FACTOR VM Win11)
+REM  setup.bat - Wrapper dla setup.ps1 (STRUCTURA - asystent AI na VM)
 REM  Uruchamia setup.ps1 z podanymi parametrami.
 REM
 REM  Usage:
-REM    setup.bat -Client sawaryn -DeployKeyPath C:\path\to\deploy_key
-REM    setup.bat -Client sawaryn -MediaPath "C:\Users\premek\OneDrive\STRUCTURA\media\"
+REM    setup.bat -Client base -CoreDeployKeyPath C:\path\to\deploy_key_core
+REM    setup.bat -Client base -MediaPath "C:\Users\ja\OneDrive\STRUCTURA\media\"
 REM ============================================================================
 
 REM Sprawdz czy PowerShell jest dostepny

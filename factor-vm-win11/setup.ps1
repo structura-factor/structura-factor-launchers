@@ -1,13 +1,21 @@
-# setup.ps1 - Glowny skrypt instalacyjny STRUCTURA FACTOR (VM Win11)
-# Tworzy VM VirtualBox z Ubuntu 24.04, instaluje Docker, klonuje repo, wstawia stack.
+# setup.ps1 - Glowny skrypt instalacyjny STRUCTURA (VM Win11)
+# Tworzy VM VirtualBox z Ubuntu 24.04, instaluje Docker, klonuje structura-core,
+# wstawia stack i konfiguruje Hermesa.
 #
 # 8 etapow z animowanym UI: braille spinners, download bars, health table.
 # Idempotentny (guard clauses na kazdym kroku).
 #
+# PROFILE:
+#   -Client base       -> profil uniwersalny: BEZ repo klienta. Rdzen (SOUL,
+#                         hermes-config.yaml, hindsight/config.json, skille)
+#                         pochodzi z structura-core/profiles/base + core/skills.
+#                         Wymagany jest tylko klucz do structura-core.
+#   -Client <klient>   -> profil klienta: dodatkowo repo structura-clients-<klient>.
+#
 # Usage:
-#   .\setup.ps1 -Client sawaryn -DeployKeyPath C:\path\to\deploy_key
-#   .\setup.ps1 -Client sawaryn -MediaPath "C:\Users\premek\OneDrive\STRUCTURA\media\"
-#   .\setup.ps1 -Client sawaryn -VM_RAM 8192 -VM_CPU 4 -VM_DISK 80 -EnableLUKS
+#   .\setup.ps1 -Client base -CoreDeployKeyPath C:\path\to\deploy_key_core
+#   .\setup.ps1 -Client base -MediaPath "C:\Users\ja\OneDrive\STRUCTURA\media\"
+#   .\setup.ps1 -Client <klient> -VM_RAM 8192 -VM_CPU 4 -VM_DISK 80 -EnableLUKS
 
 [CmdletBinding()]
 param(
@@ -19,6 +27,13 @@ param(
 
     [Parameter(Mandatory = $false)]
     [string]$CoreDeployKeyPath,
+
+    # Klucz API do ollama-cloud (model z profiles/base/hermes-config.yaml).
+    # Opcjonalny: bez niego instalacja NIE jest blokowana - klucz mozna podac
+    # pozniej (wywiad instalacyjny / hermes setup). Zapisywany do ~/.hermes/.env
+    # z chmod 600; wartosc NIGDY nie trafia na ekran ani do logu.
+    [Parameter(Mandatory = $false)]
+    [string]$OllamaApiKey,
 
     [Parameter(Mandatory = $false)]
     [int]$VM_RAM = 4096,
@@ -58,7 +73,7 @@ $SCRIPT_VERSION = "1.0"
 # instalatora byla uzyta. Bez tego kazdy log wygladal identycznie i nie dalo
 # sie powiedziec "czy to regresja, czy inny run".
 # UWAGA: aktualizuj przy kazdym commicie zmieniajacym setup.ps1.
-$SCRIPT_BUILD = "F41-20260925"
+$SCRIPT_BUILD = "F43-20261116"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
@@ -67,9 +82,25 @@ $VBOX_INSTALLER_NAME = "VirtualBox-7.1.16-172425-Win.exe"
 $GITHUB_RAW = "https://cdn.jsdelivr.net/gh"
 $LAUNCHER_REPO = "structura-factor/structura-factor-launchers"
 $CORE_REPO_URL = "git@github.com:structura-factor/structura-core.git"
-$CLIENT_REPO_URL = "git@github.com:structura-factor/structura-clients-$Client.git"
+
+# ============================================================================
+# PROFIL: base (uniwersalny) vs klient
+# ============================================================================
+# "base" = brak repo klienta. Caly rdzen pochodzi z structura-core:
+#   SKILLS, SOUL.md.tmpl, hermes-config.yaml, hindsight/config.json,
+#   init-hindsight.sh, .env.example -> profiles/base/ + skills/
+# Konwencja MUSI byc zgodna z Makefile w structura-core:
+#   ifeq ($(CLIENT),base) -> CLIENT_DIR = profiles/base
+$IS_BASE = ($Client -eq "base")
+$CLIENT_REPO_NAME = "structura-clients-$Client"
+$CLIENT_REPO_URL = "git@github.com:structura-factor/$CLIENT_REPO_NAME.git"
 # Client repos are SEPARATE per client (structura-clients-<client>) so each client's
 # deploy key grants access to ITS OWN repo only - never to other clients' data.
+# Dla profilu base ta sciezka wskazuje profiles/base w structura-core (istnieje
+# po ETAPIE 5, bo profiles/base jest czescia klonu core).
+$CORE_DIR_REMOTE = "/opt/structura/repos/structura-core"
+$CLIENT_DIR_REMOTE = "/opt/structura/repos/$CLIENT_REPO_NAME"
+if ($IS_BASE) { $CLIENT_DIR_REMOTE = "$CORE_DIR_REMOTE/profiles/base" }
 $MAX_RETRIES = 3
 $TOTAL_ETAPY = 8
 
@@ -2002,7 +2033,9 @@ function Invoke-RepoAndAppdata {
         # ("key is already in use"), wiec core i client maja OSOBNE klucze.
         # Dlatego na VM konfigurujemy aliasy SSH (github-core / github-client),
         # a URL-e klonowania uzywaja tych aliasow zamiast github.com.
-        $haveClientKey = $DeployKeyPath -and (Test-Path $DeployKeyPath)
+        # Profil base NIE MA repo klienta - klucz klienta nie jest wtedy uzywany,
+        # nawet gdyby przypadkiem lezal w C:\STRUCTURA\klucze.
+        $haveClientKey = (-not $IS_BASE) -and $DeployKeyPath -and (Test-Path $DeployKeyPath)
         $haveCoreKey = $CoreDeployKeyPath -and (Test-Path $CoreDeployKeyPath)
 
         if ($haveClientKey -or $haveCoreKey) {
@@ -2073,7 +2106,13 @@ function Invoke-RepoAndAppdata {
             }
 
             sync_repo "$coreUrl" "structura-core" || exit 1
-            sync_repo "$clientUrl" "structura-clients-$Client" || exit 1
+            # Profil base: repo klienta NIE ISTNIEJE - pomijamy (nie blad).
+            # Rdzen (SOUL, config, pamiec, skille) jest w structura-core/profiles/base.
+            if [ "$Client" = "base" ]; then
+                echo "CLIENT_REPO_SKIPPED (profil base - rdzen z structura-core/profiles/base)"
+            else
+                sync_repo "$clientUrl" "$CLIENT_REPO_NAME" || exit 1
+            fi
             echo "CLONE_DONE"
 "@
         $cloneResult = Invoke-WithRetry -Action {
@@ -2144,7 +2183,7 @@ function Invoke-RepoAndAppdata {
         sudo mkdir -p /opt/structura/appdata/duplicati
         sudo mkdir -p /opt/structura/appdata/homepage/icons
         sudo mkdir -p /opt/structura/appdata/searxng
-        sudo mkdir -p /opt/structura/ai-workspace/{STRUCTURA,Sprawy,_trash}
+        sudo mkdir -p /opt/structura/ai-workspace/{input,output,processed}
         sudo mkdir -p /opt/structura/backups/{appdata,ai-workspace,pgdump,pgdata,config}
         # Katalog konfiguracji krytycznej dla backupu (.env + certyfikaty TLS).
         # Bez .env backup bazy jest bezuzyteczny - nie ma czym sie zalogowac.
@@ -2228,18 +2267,23 @@ function Invoke-RepoAndAppdata {
         #
         # Kolejnosc: ten krok jest PRZED generate-secrets.sh, bo tamten
         # wstrzykuje sekret do pliku wskazanego przez SEARXNG_CONFIG_PATH.
-        if [ -f "/opt/structura/repos/structura-clients-$Client/searxng/settings.yml" ]; then
-            sudo cp "/opt/structura/repos/structura-clients-$Client/searxng/settings.yml" /opt/structura/appdata/searxng/settings.yml
+        # Profil base: $CLIENT_DIR_REMOTE = core/profiles/base (brak searxng/) ->
+        # zostaje config z core, bez zadnych brakujacych plikow.
+        if [ -f "$CLIENT_DIR_REMOTE/searxng/settings.yml" ]; then
+            sudo cp "$CLIENT_DIR_REMOTE/searxng/settings.yml" /opt/structura/appdata/searxng/settings.yml
             sudo chown structura:structura /opt/structura/appdata/searxng/settings.yml
             # Wskaz na kopie z appdata (sciezka absolutna - .env jest czytany
             # przez compose uruchamiany z katalogu core, ale absolutna jest
             # jednoznaczna i nie zalezy od cwd).
-            if grep -q '^SEARXNG_CONFIG_PATH=' "$CORE_DIR/.env" 2>/dev/null; then
-                sudo sed -i 's|^SEARXNG_CONFIG_PATH=.*|SEARXNG_CONFIG_PATH=/opt/structura/appdata/searxng/settings.yml|' "$CORE_DIR/.env"
+            # UWAGA: ten skrypt NIE definiuje CORE_DIR. Wczesniej bylo tu "$CORE_DIR"
+            # w here-stringu PowerShell: PS podstawial PUSTA wartosc, a bash nie mial
+            # takiej zmiennej -> "/.env". Teraz uzywamy $CORE_DIR_REMOTE (PS).
+            if grep -q '^SEARXNG_CONFIG_PATH=' "$CORE_DIR_REMOTE/.env" 2>/dev/null; then
+                sudo sed -i 's|^SEARXNG_CONFIG_PATH=.*|SEARXNG_CONFIG_PATH=/opt/structura/appdata/searxng/settings.yml|' "$CORE_DIR_REMOTE/.env"
             else
-                sudo bash -c "printf 'SEARXNG_CONFIG_PATH=/opt/structura/appdata/searxng/settings.yml\\n' >> '$CORE_DIR/.env'"
+                sudo bash -c "printf 'SEARXNG_CONFIG_PATH=/opt/structura/appdata/searxng/settings.yml\\n' >> '$CORE_DIR_REMOTE/.env'"
             fi
-            echo "searxng: config klienta -> appdata (SEARXNG_CONFIG_PATH wskazany na kopie)"
+            echo "searxng: config profilu -> appdata (SEARXNG_CONFIG_PATH wskazany na kopie)"
         else
             echo "searxng: config core (klient nie ma wlasnego)"
         fi
@@ -2267,18 +2311,18 @@ function Invoke-ContainerDeployment {
     $sshTarget = "structura@$VmIp"
     $sshPort = 2222
 
-    # Prepare .env from client template
-    Write-Host "  Preparing .env from client template..." -ForegroundColor White
+    # Prepare .env from profile template (klient: repo klienta, base: profiles/base)
+    Write-Host "  Preparing .env from profile template..." -ForegroundColor White
 
     $envCmd = @"
-        CLIENT_DIR="/opt/structura/repos/structura-clients-$Client"
-        CORE_DIR="/opt/structura/repos/structura-core"
+        CLIENT_DIR="$CLIENT_DIR_REMOTE"
+        CORE_DIR="$CORE_DIR_REMOTE"
 
         if [ -f "`$CLIENT_DIR/.env.example" ]; then
             sudo cp "`$CLIENT_DIR/.env.example" "`$CORE_DIR/.env"
-            echo "env: from client template"
+            echo "env: from profile template (`$CLIENT_DIR)"
         else
-            echo "env: WARN - client .env.example not found, using core template"
+            echo "env: WARN - .env.example profilu nie znaleziony, uzywam core"
             sudo cp "`$CORE_DIR/.env.example" "`$CORE_DIR/.env"
         fi
 
@@ -2321,8 +2365,8 @@ function Invoke-ContainerDeployment {
     Write-Host "  Running make deploy..." -ForegroundColor White
 
     $deployCmd = @"
-        cd /opt/structura/repos/structura-core
-        export CLIENT_DIR="/opt/structura/repos/structura-clients-$Client"
+        cd $CORE_DIR_REMOTE
+        export CLIENT_DIR="$CLIENT_DIR_REMOTE"
         export CLIENT="$Client"
         # 'usermod -aG docker' nie dziala w juz otwartej sesji SSH - nowe czlonkostwo
         # grupy jest czytane przy logowaniu. 'sg docker -c' przelacza grupe w tej sesji.
@@ -2586,21 +2630,34 @@ function Invoke-HindsightAndConfig {
     # mimo ze nie powstal ani jeden bank.
     $initCmd = @"
         set -e
-        CLIENT_DIR="/opt/structura/repos/structura-clients-$Client"
+        CLIENT_DIR="$CLIENT_DIR_REMOTE"
+        CORE_DIR="$CORE_DIR_REMOTE"
         if [ ! -f "`$CLIENT_DIR/init-hindsight.sh" ]; then
             echo "INIT_HINDSIGHT_MISSING"
             exit 1
         fi
         # Hermes jest NATYWNY (nie w kontenerze), wiec init-hindsight.sh
         # musi dzialac z HOSTA - API Hindsight jest wystawione na localhost:8888.
-        # Uruchamiamy skrypt bezposrednio (bez 'make', ktore wymagaloby repo).
-        chmod +x "`$CLIENT_DIR/init-hindsight.sh"
         # UWAGA: 127.0.0.1, NIE 'localhost'. Compose binduje port hindsight
         # jako "127.0.0.1:8888:8888" (tylko IPv4), a 'localhost' rozwiazuje
         # sie najpierw na ::1 -> "Connection refused". Ten sam blad zatrzymal
         # healthcheck n8n (fala 6e); tutaj objaw bylby gorszy - bank pamieci
         # nigdy nie powstalby i ETAP 7 raportowalby porazke inicjalizacji.
-        HINDSIGHT_URL="http://127.0.0.1:8888" bash "`$CLIENT_DIR/init-hindsight.sh"
+        # Profil base: uruchamiamy przez Makefile core (CLIENT=base ->
+        # CLIENT_DIR=profiles/base), zeby sciezka byla TA SAMA co przy 'make deploy'.
+        if [ "$Client" = "base" ]; then
+            if ! command -v make >/dev/null 2>&1; then
+                echo "MAKE_MISSING"
+                exit 1
+            fi
+            cd "`$CORE_DIR"
+            HINDSIGHT_URL="http://127.0.0.1:8888" make init-hindsight CLIENT=base
+        else
+            # Profil klienta: skrypt klienta uruchamiamy bezposrednio (bez 'make',
+            # ktore wymagaloby repo).
+            chmod +x "`$CLIENT_DIR/init-hindsight.sh"
+            HINDSIGHT_URL="http://127.0.0.1:8888" bash "`$CLIENT_DIR/init-hindsight.sh"
+        fi
         # Weryfikacja REALNA - liczymy banki przez API, nie przez komunikat.
         BANK_COUNT=`$(curl -sf http://127.0.0.1:8888/v1/default/banks 2>/dev/null | grep -o '"bank_id"' | wc -l)
         if [ "`$BANK_COUNT" -ge 1 ]; then
@@ -2723,13 +2780,21 @@ function Install-NativeHermes {
     # ------------------------------------------------------------------
     $configCmd = @"
         set -e
-        CLIENT_DIR="/opt/structura/repos/structura-clients-$Client"
+        # Profil base: CLIENT_DIR = structura-core/profiles/base (rdzen w core).
+        # Profil klienta: CLIENT_DIR = repo structura-clients-<klient>.
+        CLIENT_DIR="$CLIENT_DIR_REMOTE"
+        CORE_DIR="$CORE_DIR_REMOTE"
         HERMES_HOME="`$HOME/.hermes"
         mkdir -p "`$HERMES_HOME"
 
-        # config.yaml klienta (model, providery, tierowanie)
+        # config.yaml profilu (model, providery, tierowanie).
+        # base -> profiles/base/hermes-config.yaml (glm-5.3-flash @ ollama-cloud,
+        # klucz z env OLLAMA_API_KEY - nigdy z tego pliku).
         if [ -f "`$CLIENT_DIR/hermes-config.yaml" ]; then
             cp "`$CLIENT_DIR/hermes-config.yaml" "`$HERMES_HOME/config.yaml"
+            echo "CONFIG_YAML_INSTALLED (`$CLIENT_DIR/hermes-config.yaml)"
+        else
+            echo "CONFIG_YAML_MISSING"
         fi
 
         # ------------------------------------------------------------------
@@ -2790,12 +2855,22 @@ function Install-NativeHermes {
 
         echo "hermes env: `$(grep -c '=' "`$HERMES_HOME/.env" 2>/dev/null || echo 0) zmiennych"
 
-        # SOUL.md - osobowosc "prawnicza"
-        if [ -f "`$CLIENT_DIR/SOUL.md" ]; then
-            cp "`$CLIENT_DIR/SOUL.md" "`$HERMES_HOME/SOUL.md"
+        # SOUL.md - osobowosc asystenta.
+        # Profil base: SOUL.md.tmpl z rdzenia. Setup NIE podstawia placeholderow
+        # ({ASYSTENT_IMIE}, {IMIE_UZYTKOWNIKA}) - robi to wywiad instalacyjny
+        # (skill structura-wywiad) przy pierwszej rozmowie.
+        SOUL_SRC="`$CLIENT_DIR/SOUL.md"
+        if [ "$Client" = "base" ]; then
+            SOUL_SRC="`$CLIENT_DIR/SOUL.md.tmpl"
+        fi
+        if [ -f "`$SOUL_SRC" ]; then
+            cp "`$SOUL_SRC" "`$HERMES_HOME/SOUL.md"
+            echo "SOUL_INSTALLED (`$SOUL_SRC)"
+        else
+            echo "SOUL_MISSING (`$SOUL_SRC)"
         fi
 
-        # Reguly pamieci (wytyczne dla modelu)
+        # Reguly pamieci (wytyczne dla modelu) - opcjonalne, tylko profil klienta.
         if [ -f "`$CLIENT_DIR/hindsight-rules.yaml" ]; then
             cp "`$CLIENT_DIR/hindsight-rules.yaml" "`$HERMES_HOME/hindsight-rules.yaml"
         fi
@@ -2803,7 +2878,7 @@ function Install-NativeHermes {
         # --- Konfiguracja pluginu pamieci (KRYTYCZNE) ---
         # Plugin czyta $HERMES_HOME/hindsight/config.json (NIE config.yaml).
         # Zawiera: tryb polaczenia, bank, auto_retain/auto_recall, tryby recall.
-        # Bez tego: bank "hermes" zamiast "Kontekst_Sprawy", tryb "cloud"
+        # Bez tego: bank "hermes" zamiast banku z profilu, tryb "cloud"
         # zamiast "local_external" (Hermes szukalby Hindsight Cloud).
         if [ -f "`$CLIENT_DIR/hindsight/config.json" ]; then
             mkdir -p "`$HERMES_HOME/hindsight"
@@ -2816,9 +2891,10 @@ function Install-NativeHermes {
 
         # --- Skille: dwa zrodla (core = wspolne, klient = custom) ---
         mkdir -p "`$HERMES_HOME/skills"
-        CORE_DIR="/opt/structura/repos/structura-core"
 
-        # 1) Wspolne skille z core (generyczne, utrzymywane w jednym miejscu)
+        # 1) Wspolne skille z core (generyczne, utrzymywane w jednym miejscu).
+        #    Tutaj jest takze 'structura-wywiad' - wywiad instalacyjny, ktory
+        #    przeprowadza sie przy pierwszej rozmowie.
         CORE_SKILLS=0
         if [ -d "`$CORE_DIR/skills" ]; then
             cp -r "`$CORE_DIR/skills/." "`$HERMES_HOME/skills/" 2>/dev/null || true
@@ -2829,8 +2905,11 @@ function Install-NativeHermes {
         fi
 
         # 2) Skille klienta (custom). Kopiowane PO core -> moga nadpisac wspolne.
+        #    Profil base NIE MA repo klienta, wiec ta sekcja jest pusta.
         CLIENT_SKILLS=0
-        if [ -d "`$CLIENT_DIR/skills" ]; then
+        if [ "$Client" = "base" ]; then
+            echo "CLIENT_SKILLS count=0 (profil base - bez skilli klienta)"
+        elif [ -d "`$CLIENT_DIR/skills" ]; then
             cp -r "`$CLIENT_DIR/skills/." "`$HERMES_HOME/skills/" 2>/dev/null || true
             CLIENT_SKILLS=`$(ls -1 "`$CLIENT_DIR/skills" 2>/dev/null | wc -l)
             echo "CLIENT_SKILLS count=`$CLIENT_SKILLS"
@@ -2842,8 +2921,12 @@ function Install-NativeHermes {
         SKILL_COUNT=`$(ls -1 "`$HERMES_HOME/skills" 2>/dev/null | wc -l)
         echo "SKILLS_INSTALLED count=`$SKILL_COUNT"
 
-        # Motyw dashboardu (Aether - ciemnoszare tlo czatu)
-        if [ -d "`$CLIENT_DIR/dashboard-themes" ]; then
+        # Motyw dashboardu - TYLKO profil klienta.
+        # base korzysta z motywu domyslnego i brandingu 'STRUCTURA' z core:
+        # brak motywu klienta = brak instalacji (nie blad).
+        if [ "$Client" = "base" ]; then
+            echo "THEME_SKIPPED (profil base - motyw domyslny z core)"
+        elif [ -d "`$CLIENT_DIR/dashboard-themes" ]; then
             mkdir -p "`$HERMES_HOME/dashboard-themes"
             cp -r "`$CLIENT_DIR/dashboard-themes/." "`$HERMES_HOME/dashboard-themes/" 2>/dev/null || true
             THEME_NAME=`$(ls -1 "`$HERMES_HOME/dashboard-themes" 2>/dev/null | head -1 | sed 's/\.yaml`$//')
@@ -2856,15 +2939,40 @@ function Install-NativeHermes {
     if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $configResult -ForegroundColor DarkGray }
 
     if ($configResult -match 'CONFIG_DONE') {
-        Write-Check "Konfiguracja klienta wgrana do ~/.hermes"
+        if ($IS_BASE) {
+            Write-Check "Konfiguracja profilu base wgrana do ~/.hermes (SOUL, config, pamiec)"
+        } else {
+            Write-Check "Konfiguracja klienta wgrana do ~/.hermes"
+        }
     } else {
-        Write-Check "Konfiguracja klienta: sprawdz log" -Warn
+        Write-Check "Konfiguracja ~/.hermes: sprawdz log" -Warn
+    }
+
+    if ($configResult -match 'CONFIG_YAML_MISSING') {
+        Write-Check "config.yaml: BRAK w profilu - Hermes wystartuje z domyslnym modelem" -Warn
+        Write-Log "hermes-config.yaml missing in $CLIENT_DIR_REMOTE"
+    } elseif ($configResult -match 'CONFIG_YAML_INSTALLED') {
+        Write-Check "config.yaml: wgrany z profilu"
+    }
+
+    if ($configResult -match 'SOUL_MISSING') {
+        Write-Check "SOUL.md: BRAK w profilu - asystent bez osobowosci" -Warn
+        Write-Log "SOUL source missing in $CLIENT_DIR_REMOTE"
+    } elseif ($configResult -match 'SOUL_INSTALLED') {
+        if ($IS_BASE) {
+            Write-Check "SOUL.md: wgrany z rdzenia (placeholdery wypelni wywiad)"
+        } else {
+            Write-Check "SOUL.md: wgrany z repo klienta"
+        }
     }
 
     $themeMatch = [regex]::Match($configResult, 'THEME_INSTALLED name=([\w\-]+)')
     if ($themeMatch.Success) {
         $themeName = $themeMatch.Groups[1].Value
         Write-Check "Motyw dashboardu: $themeName"
+    } elseif ($configResult -match 'THEME_SKIPPED' -or $IS_BASE) {
+        # Profil base: brak motywu klienta to STAN OCZEKIWANY, nie ostrzezenie.
+        Write-Check "Motyw dashboardu: domyslny (profil base)"
     } else {
         Write-Check "Motyw dashboardu: nie znaleziono (sprawdz repo klienta)" -Warn
     }
@@ -2878,7 +2986,11 @@ function Install-NativeHermes {
         $c = [int]$coreSkills.Groups[1].Value
         $k = [int]$clientSkills.Groups[1].Value
         $t = if ($totalSkills.Success) { $totalSkills.Groups[1].Value } else { "$($c + $k)" }
-        Write-Check "Skille: $t (wspolne z core: $c, custom klienta: $k)"
+        if ($IS_BASE) {
+            Write-Check "Skille: $t (z core, w tym structura-wywiad; profil base bez skilli klienta)"
+        } else {
+            Write-Check "Skille: $t (wspolne z core: $c, custom klienta: $k)"
+        }
     } elseif ($configResult -match 'CORE_SKILLS_MISSING') {
         Write-Check "Skille: BRAK katalogu skills/ w core" -Warn
     } else {
@@ -2892,6 +3004,73 @@ function Install-NativeHermes {
         Write-Check "Pamiec: BRAK hindsight/config.json - pamiec nie zapisze sie automatycznie" -Fail
         Write-Log "Install-NativeHermes: HINDSIGHT_CONFIG_MISSING (brak w repo klienta)"
         return $false
+    }
+
+    # ------------------------------------------------------------------
+    # 2b. OLLAMA_API_KEY -> ~/.hermes/.env
+    #
+    # Model (glm-5.3-flash @ ollama-cloud) jest w profiles/base/hermes-config.yaml,
+    # ale KLUCZ czytany jest wylacznie ze zmiennej srodowiskowej OLLAMA_API_KEY.
+    #
+    # Klucz jest OPCJONALNY: brak NIE blokuje instalacji - mozna go podac
+    # pozniej (wywiad instalacyjny / 'hermes setup').
+    # Wartosc NIGDY nie trafia na ekran ani do logu; jedyny slad to
+    # ~/.hermes/.env (chmod 600) na VM.
+    # ------------------------------------------------------------------
+    $ollamaKey = $OllamaApiKey
+    if (-not $ollamaKey -and -not $Quiet) {
+        Write-Host ""
+        Write-Host "  Klucz API ollama-cloud (model glm-5.3-flash) - opcjonalny." -ForegroundColor White
+        Write-Host "  Enter = pomin (podasz go w wywiadzie instalacyjnym)." -ForegroundColor DarkGray
+        $secKey = Read-Host "  OLLAMA_API_KEY" -AsSecureString
+        if ($secKey -and $secKey.Length -gt 0) {
+            $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secKey)
+            try {
+                $ollamaKey = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+            } finally {
+                [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+            }
+        }
+    }
+
+    # Walidacja PRZED wyslaniem: klucz idzie do skryptu bash w apostrofach,
+    # wiec niedozwolone znaki (spacja, cudzyslow, $, nowa linia) moglyby
+    # rozsypac skrypt. Odrzucamy je i mowimy o tym wprost.
+    if ($ollamaKey -and $ollamaKey -notmatch '^[A-Za-z0-9._\-]+$') {
+        Write-Check "OLLAMA_API_KEY: niedozwolone znaki (dozwolone: A-Z a-z 0-9 . _ -) - pominieto" -Warn
+        Write-Log "OLLAMA_API_KEY rejected: invalid characters (value not logged)"
+        $ollamaKey = $null
+    }
+
+    if ($ollamaKey) {
+        $keyCmd = @"
+set -e
+HERMES_HOME="`$HOME/.hermes"
+mkdir -p "`$HERMES_HOME"
+touch "`$HERMES_HOME/.env"
+chmod 600 "`$HERMES_HOME/.env"
+# Idempotencja przy re-runie: usun poprzedni wpis, potem dopisz nowy.
+if grep -q '^OLLAMA_API_KEY=' "`$HERMES_HOME/.env" 2>/dev/null; then
+    grep -v '^OLLAMA_API_KEY=' "`$HERMES_HOME/.env" > "`$HERMES_HOME/.env.tmp" || true
+    cat "`$HERMES_HOME/.env.tmp" > "`$HERMES_HOME/.env"
+    rm -f "`$HERMES_HOME/.env.tmp"
+fi
+printf 'OLLAMA_API_KEY=%s\n' '$ollamaKey' >> "`$HERMES_HOME/.env"
+chmod 600 "`$HERMES_HOME/.env"
+# Skrypt zawiera sekret - usuwamy go od razu (na Linuksie dziala na otwartym pliku).
+rm -f "`$0"
+if grep -q '^OLLAMA_API_KEY=..*' "`$HERMES_HOME/.env"; then echo "OLLAMA_KEY_SET"; else echo "OLLAMA_KEY_FAILED"; fi
+"@
+        $keyResult = (Invoke-SshScript -Script $keyCmd -Label "ollama-key" -sshTarget $sshTarget -SshPort $sshPort).Output
+        if ($keyResult -match 'OLLAMA_KEY_SET') {
+            Write-Check "OLLAMA_API_KEY: zapisany w ~/.hermes/.env (chmod 600)"
+        } else {
+            Write-Check "OLLAMA_API_KEY: zapis nieudany - podaj klucz w wywiadzie" -Warn
+            Write-Log "ollama key write failed (value not logged)"
+        }
+    } else {
+        Write-Check "OLLAMA_API_KEY: nie podany - podasz go w wywiadzie instalacyjnym (instalacja NIE jest blokowana)" -Warn
+        Write-Log "OLLAMA_API_KEY not provided (optional)"
     }
 
     # ------------------------------------------------------------------
@@ -3241,7 +3420,7 @@ function Install-SharedFolder {
         [string]$VmIp
     )
 
-    Write-Host "  Konfigurowanie wspoldzielonego folderu ai_workspace..." -ForegroundColor White
+    Write-Host "  Konfigurowanie wspoldzielonego folderu AI_Workspace..." -ForegroundColor White
 
     # ------------------------------------------------------------------------
     # WYBOR METODY: VirtualBox Shared Folders (vboxsf), NIE SMB.
@@ -3263,18 +3442,24 @@ function Install-SharedFolder {
     $vbox = Get-VBoxManage
     if (-not $vbox) { return $false }
 
-    # Folder po stronie Windows - w profilu uzytkownika, zeby byl naturalny
-    # i latwy do znalezienia w Eksploratorze.
-    $hostFolder = Join-Path $env:USERPROFILE "STRUCTURA-PLiki"
+    # UDZIAL: nazwa 'AI_Workspace', folder hosta C:\AI_Workspace, montowany w VM
+    # jako /opt/structura/ai-workspace. Ten sam folder widzi uzytkownik w
+    # Eksploratorze i asystent w VM - bez kopiowania plikow.
+    $ShareName = "AI_Workspace"
+    $MountPoint = "/opt/structura/ai-workspace"
+    $hostFolder = "C:\AI_Workspace"
     if (-not (Test-Path $hostFolder)) {
+        Write-Log "SharedFolder: tworze $hostFolder"
         $null = New-Item -ItemType Directory -Path $hostFolder -Force
     }
 
-    # Podfolder na dokumenty spraw (klient pracuje na plikach)
-    $sprawyFolder = Join-Path $hostFolder "Sprawy"
-    if (-not (Test-Path $sprawyFolder)) {
-        Write-Log "SharedFolder: tworze $sprawyFolder"
-        $null = New-Item -ItemType Directory -Path $sprawyFolder -Force
+    # Podkatalogi wymiany (tworzone po stronie hosta, zeby byly od razu widoczne;
+    # w VM dostaja uid/gid 1000 z fstab).
+    foreach ($sub in @("input", "output", "processed")) {
+        $subPath = Join-Path $hostFolder $sub
+        if (-not (Test-Path $subPath)) {
+            $null = New-Item -ItemType Directory -Path $subPath -Force
+        }
     }
 
     # Rejestracja udzialu w VirtualBox z automount
@@ -3294,31 +3479,46 @@ function Install-SharedFolder {
     $vmRunning = (& $vbox list runningvms 2>&1 | Out-String) -match [regex]::Escape("`"$VmName`"")
 
     if ($vmRunning) {
-        # Usun stara rejestracje (jesli jest), potem dodaj na zywo.
+        # VM DZIALA: 'modifyvm --sharedfolder' jest ignorowane (milczaco, exit 0).
+        # Uzywamy 'controlvm sharedfolder add <name> --hostpath ...' - udzial
+        # jest PRZEJSCIOWY (transient): dziala od razu, a po restarcie VM
+        # odtwarza go wpis w /etc/fstab (montowanie vboxsf) + rejestracja
+        # stala przy kolejnym uruchomieniu instalatora z zatrzymana VM.
+        # Dlatego NIE przerywamy instalacji, gdy VM chodzi.
         $null = & $vbox controlvm $VmName sharedfolder remove "ai-workspace" 2>&1
-        $addOut = & $vbox controlvm $VmName sharedfolder add "ai-workspace" `
-            --hostpath "$hostFolder" --automount --auto-mount-point "/opt/structura/ai-workspace" 2>&1
-        $regMode = "controlvm (VM dziala)"
+        $null = & $vbox controlvm $VmName sharedfolder remove $ShareName 2>&1
+        $addOut = & $vbox controlvm $VmName sharedfolder add $ShareName `
+            --hostpath "$hostFolder" --automount --auto-mount-point $MountPoint 2>&1
+        $regMode = "controlvm (VM dziala - udzial przejsciowy)"
     } else {
+        # VM ZATRZYMANA: rejestracja na stale.
         $null = & $vbox modifyvm $VmName --sharedfolder remove "ai-workspace" 2>&1
-        $addOut = & $vbox modifyvm $VmName --sharedfolder add "ai-workspace" `
-            --hostpath "$hostFolder" --automount --auto-mount-point "/opt/structura/ai-workspace" 2>&1
+        $null = & $vbox modifyvm $VmName --sharedfolder remove $ShareName 2>&1
+        $addOut = & $vbox modifyvm $VmName --sharedfolder add $ShareName `
+            --hostpath "$hostFolder" --automount --auto-mount-point $MountPoint 2>&1
         $regMode = "modifyvm (VM zatrzymana)"
+        # Fallback: nie kazda wersja VBox zna 'modifyvm --sharedfolder'.
+        # Klasyczna forma 'sharedfolder add --name' dziala przy zatrzymanej VM.
+        if ($LASTEXITCODE -ne 0) {
+            $addOut = & $vbox sharedfolder add $VmName `
+                --name $ShareName --hostpath "$hostFolder" --automount --auto-mount-point $MountPoint 2>&1
+            $regMode = "sharedfolder add --name $ShareName (VM zatrzymana)"
+        }
     }
 
     # WERYFIKACJA: samo $LASTEXITCODE nie wystarcza (patrz wyzej) - pytamy
     # VirtualBox, czy udzial NAPRAWDE jest zarejestrowany.
     Start-Sleep -Seconds 2
     $listOut = & $vbox sharedfolder list $VmName 2>&1 | Out-String
-    if ($listOut -notmatch 'ai-workspace') {
+    if ($listOut -notmatch [regex]::Escape($ShareName)) {
         Write-Check "Folder wspoldzielony: rejestracja NIEUDANA ($regMode)" -Warn
         Write-Log "SharedFolder not registered. add: $addOut"
-        Write-Host "      Recznie: VBoxManage controlvm $VmName sharedfolder add ai-workspace --hostpath `"$hostFolder`" --automount --auto-mount-point /opt/structura/ai-workspace" -ForegroundColor Yellow
+        Write-Host "      Recznie: VBoxManage controlvm $VmName sharedfolder add $ShareName --hostpath `"$hostFolder`" --automount --auto-mount-point $MountPoint" -ForegroundColor Yellow
         return $false
     }
     Write-Log "SharedFolder zarejestrowany przez $regMode"
 
-    Write-Check "Folder wspoldzielony: $hostFolder -> VM:/opt/structura/ai-workspace (automount)"
+    Write-Check "Folder wspoldzielony: $hostFolder -> VM:$MountPoint (udzial $ShareName, automount)"
 
     # Upewnij sie ze Guest Additions sa zainstalowane w gosciu (vboxsf)
     $sshTarget = "structura@$VmIp"
@@ -3357,32 +3557,46 @@ function Install-SharedFolder {
     # Wpis w /etc/fstab jako zabezpieczenie (automount VBox bywa zawodny
     # przy pierwszym starcie po wlaczeniu udzialu - fstab gwarantuje montowanie)
     $fstabCmd = @"
-        if ! grep -q 'ai-workspace' /etc/fstab 2>/dev/null; then
-            echo 'ai-workspace /opt/structura/ai-workspace vboxsf defaults,nofail,uid=1000,gid=1000,umask=002 0 0' | sudo tee -a /etc/fstab > /dev/null
-            echo "FSTAB_ADDED"
-        else
+        FSTAB_DEV="AI_Workspace"
+        FSTAB_MP="/opt/structura/ai-workspace"
+
+        # Idempotencja po zmianie nazwy udzialu (bylo 'ai-workspace'):
+        # usun stary wpis, zeby ten sam punkt nie byl montowany dwa razy.
+        if grep -qE '^ai-workspace[[:space:]]' /etc/fstab 2>/dev/null; then
+            sudo sed -i.bak '/^ai-workspace[[:space:]]/d' /etc/fstab
+            echo "FSTAB_OLD_REMOVED"
+        fi
+
+        if grep -q "^`$FSTAB_DEV[[:space:]]" /etc/fstab 2>/dev/null; then
             echo "FSTAB_EXISTS"
+        else
+            # vboxsf: uid/gid 1000 = jedyny uzytkownik VM (asystent) i n8n.
+            printf '%s %s vboxsf defaults,nofail,uid=1000,gid=1000,umask=002 0 0\n' "`$FSTAB_DEV" "`$FSTAB_MP" | sudo tee -a /etc/fstab > /dev/null
+            echo "FSTAB_ADDED"
         fi
         # Utworz punkt montowania i zamontuj teraz
-        sudo mkdir -p /opt/structura/ai-workspace
+        sudo mkdir -p "`$FSTAB_MP"
         sudo mount -a 2>/dev/null || true
-        if mountpoint -q /opt/structura/ai-workspace 2>/dev/null; then echo "MOUNTED"; else echo "NOT_MOUNTED"; fi
+        if mountpoint -q "`$FSTAB_MP" 2>/dev/null; then echo "MOUNTED"; else echo "NOT_MOUNTED"; fi
 
-        # Podkatalog wymiany dla n8n (klient wrzuca plik -> workflow czyta ->
-        # zapisuje wynik). Montowany do kontenera jako /exchange.
+        # Podkatalogi wymiany: input/ output/ processed/ (widoczne tez z Windows).
         # Uprawnienia: n8n dziala jako uid 1000, a vboxsf montuje z uid/gid
-        # z fstab (uid=1000,gid=1000) - dlatego ten katalog MUSI byc zapisywalny
-        # dla uid 1000, inaczej workflow nie zapisze wyniku.
-        if mountpoint -q /opt/structura/ai-workspace 2>/dev/null; then
-            mkdir -p /opt/structura/ai-workspace/n8n/{input,output,processed} 2>/dev/null || true
-            chmod -R 775 /opt/structura/ai-workspace/n8n 2>/dev/null || true
+        # z fstab - dlatego te katalogi MUSZA byc zapisywalne dla uid 1000,
+        # inaczej workflow nie zapisze wyniku.
+        if mountpoint -q "`$FSTAB_MP" 2>/dev/null; then
+            mkdir -p "`$FSTAB_MP"/{input,output,processed} 2>/dev/null || true
+            chmod -R 775 "`$FSTAB_MP"/input "`$FSTAB_MP"/output "`$FSTAB_MP"/processed 2>/dev/null || true
+            # Podkatalog wymiany dla n8n (montowany do kontenera jako /exchange)
+            mkdir -p "`$FSTAB_MP/n8n"/{input,output,processed} 2>/dev/null || true
+            chmod -R 775 "`$FSTAB_MP/n8n" 2>/dev/null || true
+            echo "WORKSPACE_READY"
             echo "EXCHANGE_READY"
         fi
 "@
     $fstabResult = (Invoke-SshScript -Script $fstabCmd -Label "sharedfolder" -sshTarget $sshTarget -SshPort $sshPort).Output
 
-    if ($fstabResult -match 'MOUNTED') {
-        Write-Check "Folder wspoldzielony zamontowany: /opt/structura/ai-workspace"
+    if ($fstabResult -match '(?m)^MOUNTED') {
+        Write-Check "Folder wspoldzielony zamontowany: /opt/structura/ai-workspace (vboxsf, uid=1000)"
     } else {
         Write-Check "Folder wspoldzielony: zamontuje sie przy nastepnym starcie VM (nofail w fstab)" -Warn
         Write-Log "SharedFolder mount state: $fstabResult"
@@ -3605,12 +3819,20 @@ F2BEOF
         Write-Check "fail2ban NIE aktywny - sprawdz 'systemctl status fail2ban'" -Warn
     }
 
-    # --- Dashboard theme (Aether Sawaryn) ---
-    Write-Host "  Installing dashboard theme (Aether Sawaryn)..." -ForegroundColor White
+    # --- Dashboard theme (TYLKO profil klienta) ---
+    # Profil base nie ma repo klienta, wiec nie ma tez motywu klienta: zostaje
+    # motyw domyslny + branding 'STRUCTURA' z core (homepage). Motyw klienta
+    # nazywa sie 'aether-<klient>' i jest instalowany tylko gdy istnieje.
+    $themeResult = ""
+    if ($IS_BASE) {
+        Write-Check "Dashboard theme: domyslny (profil base - bez motywu klienta)"
+    } else {
+        Write-Host "  Installing dashboard theme (aether-$Client)..." -ForegroundColor White
+    }
 
     $themeCmd = @"
         # Hermes jest NATYWNY - motyw trafia do ~/.hermes, nie do kontenera.
-        CLIENT_DIR="/opt/structura/repos/structura-clients-$Client"
+        CLIENT_DIR="$CLIENT_DIR_REMOTE"
         HERMES_HOME="`$HOME/.hermes"
         THEME_NAME="aether-$Client"
         THEME_FILE="`$CLIENT_DIR/dashboard-themes/`$THEME_NAME.yaml"
@@ -3718,22 +3940,25 @@ dashboard:
         if systemctl is-active --quiet hermes; then echo "HERMES_RESTARTED"; fi
 "@
 
-    $themeResult = (Invoke-SshScript -Script $themeCmd -Label "theme" -sshTarget $sshTarget -SshPort $sshPort).Output
-    if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $themeResult -ForegroundColor DarkGray }
+    # Profil base: motywu klienta nie ma - nie ma czego instalowac ani patchowac.
+    if (-not $IS_BASE) {
+        $themeResult = (Invoke-SshScript -Script $themeCmd -Label "theme" -sshTarget $sshTarget -SshPort $sshPort).Output
+        if ($PSBoundParameters.ContainsKey("Verbose")) { Write-Host $themeResult -ForegroundColor DarkGray }
 
-    if ($themeResult -match 'THEME_INSTALLED') {
-        Write-Check "Dashboard theme: Aether Sawaryn installed"
-    } else {
-        Write-Check "Dashboard theme: $themeResult" -Warn
-    }
+        if ($themeResult -match 'THEME_INSTALLED') {
+            Write-Check "Dashboard theme: aether-$Client installed"
+        } else {
+            Write-Check "Dashboard theme: $themeResult" -Warn
+        }
 
-    if ($themeResult -match 'GH#38238_PATCHED') {
-        Write-Check "GH#38238 patch: tlo czatu ciemnoszare (#2A2A2E) - dziala od razu"
-    } elseif ($themeResult -match 'GH38238_PATCH_FAILED') {
-        Write-Check "GH#38238 patch: nie zastosowano - tlo czatu moze byc czarne" -Warn
-        Write-Log "gh38238 patcher failed on native Hermes"
-    } else {
-        Write-Check "GH#38238 patch: BRAK patchera w repo klienta" -Warn
+        if ($themeResult -match 'GH#38238_PATCHED') {
+            Write-Check "GH#38238 patch: tlo czatu ciemnoszare (#2A2A2E) - dziala od razu"
+        } elseif ($themeResult -match 'GH38238_PATCH_FAILED') {
+            Write-Check "GH#38238 patch: nie zastosowano - tlo czatu moze byc czarne" -Warn
+            Write-Log "gh38238 patcher failed on native Hermes"
+        } else {
+            Write-Check "GH#38238 patch: BRAK patchera w repo klienta" -Warn
+        }
     }
 
     # --- Folder wspoldzielony Windows <-> VM (TRWALY) ---
@@ -3845,7 +4070,7 @@ function Invoke-LUKS {
     # z autoinstall (storage.layout.name = direct) ma JEDNA partycje root -
     # /dev/sda5 nie istnieje. Funkcja nie mogla zadzialac, a mimo to
     # raportowala "LUKS setup: check VM console" -Warn, co czytalo sie jako
-    # "szyfrowanie wlaczone". Dla kancelarii z tajemnica zawodowa to powazne
+    # "szyfrowanie wlaczone". Dla danych wrazliwych (sprawy, dokumenty) to powazne
     # wprowadzenie w blad.
     #
     # Realna implementacja wymaga: osobnego dysku/wolumenu w autoinstall
@@ -3881,11 +4106,13 @@ function Show-Summary {
 
     $ramGB = [math]::Round($VM_RAM / 1024)
     $diskGB = [math]::Round($VM_DISK / 1024)
-    $hostFolder = Join-Path $env:USERPROFILE "STRUCTURA-PLiki"
+    # Folder wspoldzielony z VM (patrz Install-SharedFolder): ten sam widok
+    # po obu stronach - uzytkownik wrzuca plik, asystent go widzi.
+    $hostFolder = "C:\AI_Workspace"
 
     # ========================================================================
     # Podsumowanie dla KLIENTA (nie dla informatyka).
-    # Cel: prawnik ma wiedziec (1) co dostal, (2) gdzie kliknac, (3) co robic
+    # Cel: uzytkownik ma wiedziec (1) co dostal, (2) gdzie kliknac, (3) co robic
     # dalej. Zero zargonu, zero "SSH", zero "localhost".
     #
     # Dashboard: NPM tworzy osobne hosty (homepage.local, n8n.local, ...).
@@ -3898,15 +4125,18 @@ function Show-Summary {
     Write-Host "   GOTOWE - ASYSTENT DZIALA" -ForegroundColor Cyan
     Write-Host ("=" * 66) -ForegroundColor DarkCyan
     Write-Host ""
+    Write-Host "   Asystent dziala. Przy pierwszej rozmowie przeprowadzi z Toba" -ForegroundColor Green
+    Write-Host "   wywiad instalacyjny STRUCTURA (5-10 min)." -ForegroundColor Green
+    Write-Host ""
     Write-Host "   Co zostalo zainstalowane" -ForegroundColor White
     Write-Host "   ------------------------" -ForegroundColor DarkGray
     Write-Host "     Maszyna wirtualna z systemem Ubuntu" -ForegroundColor Gray
     Write-Host "       $VM_NAME  (${ramGB} GB pamieci, $VM_CPU rdzenie, ${diskGB} GB dysku)" -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "     Osiem uslug gotowych do pracy:" -ForegroundColor Gray
-    Write-Host "       - Asystent AI (rozmowa po polsku, zna przepisy)" -ForegroundColor DarkGray
-    Write-Host "       - Pamiec kancelarii (baza wiedzy i kontekst spraw)" -ForegroundColor DarkGray
-    Write-Host "       - Wyszukiwarka prawna (ISAP, orzeczenia)" -ForegroundColor DarkGray
+    Write-Host "     Uslugi gotowe do pracy:" -ForegroundColor Gray
+    Write-Host "       - Asystent AI (rozmowa po polsku, pelny dostep do plikow)" -ForegroundColor DarkGray
+    Write-Host "       - Pamiec asystenta (kontekst, ustalenia, preferencje)" -ForegroundColor DarkGray
+    Write-Host "       - Wyszukiwarka internetowa (prywatna)" -ForegroundColor DarkGray
     Write-Host "       - Automatyzacje (przeplywy dokumentow)" -ForegroundColor DarkGray
     Write-Host "       - Kopie zapasowe (codziennie w nocy)" -ForegroundColor DarkGray
     Write-Host "       - Panel zarzadzania" -ForegroundColor DarkGray
@@ -3923,6 +4153,8 @@ function Show-Summary {
     Write-Host "          $hostFolder" -ForegroundColor Cyan
     Write-Host "        To ten sam folder widziany przez asystenta - wrzucasz" -ForegroundColor DarkGray
     Write-Host "        dokument, asystent go widzi. Bez kopiowania." -ForegroundColor DarkGray
+    Write-Host "        Podkatalogi: input\\ (do asystenta), output\\ (od asystenta)," -ForegroundColor DarkGray
+    Write-Host "        processed\\ (zakonczone)." -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "     3. Asystent startuje automatycznie z Windowsem." -ForegroundColor Gray
     Write-Host "        Nic nie trzeba uruchamiac - dziala w tle." -ForegroundColor DarkGray
@@ -4065,7 +4297,7 @@ try {
     # wersja byla uzyta. Bez tego kazdy log wygladal identycznie.
     Write-Host "  Instalator: build $SCRIPT_BUILD (v$SCRIPT_VERSION)" -ForegroundColor DarkGray
     Write-Log "=== INSTALATOR BUILD $SCRIPT_BUILD (v$SCRIPT_VERSION) ==="
-    Write-Banner -Title "STRUCTURA AI - FACTOR" -Subtitle "Personal Assistant dla kancelarii prawnej" -ClientName $Client -Etap "1/$TOTAL_ETAPY - Pre-flight checks"
+    Write-Banner -Title "STRUCTURA - ASYSTENT AI" -Subtitle "Instalacja lokalna (VirtualBox + Ubuntu)" -ClientName $(if ($IS_BASE) { "base (uniwersalny)" } else { $Client }) -Etap "1/$TOTAL_ETAPY - Pre-flight checks"
 
     # Install deploy key
     Install-DeployKey
@@ -4115,8 +4347,8 @@ try {
     $deployOk = Invoke-ContainerDeployment -VmIp $vmIp
     if (-not $deployOk) { throw "Container deployment failed." }
 
-    # --- ETAP 7/8: Hermes natywnie + Hindsight + konfiguracja klienta ---
-    Write-Etap -Number 7 -Name "Hermes (natywnie) + Hindsight + config klienta"
+    # --- ETAP 7/8: Hermes natywnie + Hindsight + konfiguracja profilu ---
+    Write-Etap -Number 7 -Name "Hermes (natywnie) + Hindsight + konfiguracja profilu"
     # Hermes NATYWNIE (bez kontenera) - zarzadza kontenerami i nie dlawi sie
     # w izolacji. Instalowany z PyPI + usluga systemd (start z VM).
     $hermesOk = Install-NativeHermes -VmIp $vmIp -Client $Client

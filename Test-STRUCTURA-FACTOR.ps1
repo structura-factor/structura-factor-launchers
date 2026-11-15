@@ -1,12 +1,18 @@
 <#
     Test-STRUCTURA-FACTOR.ps1
-    STRUCTURA FACTOR - instalacja na czystej maszynie klienta.
+    STRUCTURA - instalacja na czystej maszynie (test powtarzalny).
 
     CO ROBI:
       1. zaklada C:\STRUCTURA (klucze / media / logs)
-      2. znajduje klucze deploy (core + client) - lokalnie albo pyta o folder
+      2. znajduje klucz(e) deploy - lokalnie albo pyta o folder
       3. pobiera instalator z GitHuba (staly pin) i uruchamia go
       4. instalator pyta o sciezke, moc VM i folder mediow
+
+    PROFIL (parametr -Client):
+      base (domyslny) - instalacja uniwersalna, BEZ repo klienta:
+                        wystarczy klucz do structura-core.
+      <klient>        - instalacja klienta: potrzebne OBA klucze
+                        (core + repo structura-clients-<klient>).
 
     JAK URUCHOMIC (PowerShell jako Administrator):
       powershell -ExecutionPolicy Bypass -File ".\Test-STRUCTURA-FACTOR.ps1"
@@ -18,6 +24,7 @@
       Jesli kluczy nie znajdzie, skrypt zapyta o folder.
 
       .\Test-STRUCTURA-FACTOR.ps1 -KeysPath "D:\od_premka\klucze"
+      .\Test-STRUCTURA-FACTOR.ps1 -Client base
 #>
 
 [CmdletBinding()]
@@ -25,11 +32,18 @@ param(
     # Folder z plikami kluczy (opcjonalnie - skrypt szuka tez sam)
     [string]$KeysPath,
 
+    # Profil instalacji: "base" = uniwersalny (bez repo klienta)
+    [string]$Client = "base",
+
     # Folder z pobranym Ubuntu ISO + VirtualBox (opcjonalnie - instalator zapyta)
     [string]$MediaCachePath
 )
 
 $ErrorActionPreference = 'Stop'
+
+if (-not $Client -or $Client.Trim() -eq "") { $Client = "base" }
+$Client = $Client.Trim()
+$IS_BASE = ($Client -eq "base")
 
 $BASE_DIR = "C:\STRUCTURA"
 $KEYS_DIR = "$BASE_DIR\klucze"
@@ -42,8 +56,12 @@ $INSTALL_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-la
 
 Write-Host ""
 Write-Host "+============================================================+" -ForegroundColor Cyan
-Write-Host "|  STRUCTURA FACTOR - INSTALACJA                              |" -ForegroundColor Cyan
-Write-Host "|  Sawaryn i Partnerzy - Kancelaria Prawna                    |" -ForegroundColor Cyan
+Write-Host "|  STRUCTURA - ASYSTENT AI - INSTALACJA                       |" -ForegroundColor Cyan
+if ($IS_BASE) {
+    Write-Host "|  Profil: base (uniwersalny, bez repo klienta)               |" -ForegroundColor Cyan
+} else {
+    Write-Host "|  Profil: klient $Client" -ForegroundColor Cyan
+}
 Write-Host "+============================================================+" -ForegroundColor Cyan
 Write-Host ""
 
@@ -66,7 +84,11 @@ Write-Host "  v Struktura gotowa: $BASE_DIR" -ForegroundColor Green
 # --- Szukanie kluczy deploy ---
 # Skrypt NIE zaklada zadnej konkretnej lokalizacji sieciowej - klient moze
 # dostac klucze na pendrivie, w mailu, albo skopiowac obok skryptu.
-Write-Host "  > Szukanie kluczy deploy (core + client)..." -ForegroundColor Cyan
+if ($IS_BASE) {
+    Write-Host "  > Szukanie klucza deploy (structura-core)..." -ForegroundColor Cyan
+} else {
+    Write-Host "  > Szukanie kluczy deploy (core + client)..." -ForegroundColor Cyan
+}
 
 $searchDirs = @()
 if ($KeysPath) { $searchDirs += $KeysPath }
@@ -139,30 +161,33 @@ if (-not $keyFiles -or $keyFiles.Count -eq 0) {
     }
 }
 
-# Rozpoznanie: plik z 'core' = klucz do structura-core, reszta = klient
+# Rozpoznanie: plik z 'core' = klucz do structura-core, reszta = klient.
+# Profil base NIE MA repo klienta, wiec klucz klienta nie jest wymagany.
 $coreFile = $keyFiles | Where-Object { $_.Name -match 'core' } | Select-Object -First 1
 $clientFile = $keyFiles | Where-Object { $_.Name -notmatch 'core' } | Select-Object -First 1
 
-if (-not $clientFile -and $keyFiles.Count -eq 1) { $clientFile = $keyFiles[0] }
-
-if (-not $clientFile) {
-    Write-Host "  x Nie znaleziono klucza KLIENTA (pliku bez 'core' w nazwie)." -ForegroundColor Red
-    Write-Host "    Znalezione pliki: $($keyFiles.Name -join ', ')" -ForegroundColor DarkGray
-    exit 1
-}
-
-$clientDest = Copy-KeyToStore -File $clientFile -DestName 'deploy_key_client'
-Write-Host "  v Klucz klienta: $clientDest" -ForegroundColor Green
-
-if ($coreFile) {
-    $coreDest = Copy-KeyToStore -File $coreFile -DestName 'deploy_key_core'
-    Write-Host "  v Klucz core:    $coreDest" -ForegroundColor Green
-} else {
+if (-not $coreFile) {
     Write-Host "  x Brak klucza CORE (pliku z 'core' w nazwie)." -ForegroundColor Red
     Write-Host "    Bez niego klon structura-core padnie i instalacja sie zatrzyma." -ForegroundColor Yellow
     Write-Host "    Znalezione pliki: $($keyFiles.Name -join ', ')" -ForegroundColor DarkGray
-    Write-Host "    Popros o drugi plik klucza i uruchom skrypt ponownie." -ForegroundColor Yellow
     exit 1
+}
+$coreDest = Copy-KeyToStore -File $coreFile -DestName 'deploy_key_core'
+Write-Host "  v Klucz core:    $coreDest" -ForegroundColor Green
+
+if ($IS_BASE) {
+    # base: klucz klienta nie istnieje - i nie jest potrzebny.
+    Write-Host "  - Klucz klienta: nie dotyczy (profil base - bez repo klienta)" -ForegroundColor DarkGray
+} else {
+    if (-not $clientFile -and $keyFiles.Count -eq 1) { $clientFile = $keyFiles[0] }
+    if (-not $clientFile) {
+        Write-Host "  x Nie znaleziono klucza KLIENTA (pliku bez 'core' w nazwie)." -ForegroundColor Red
+        Write-Host "    Znalezione pliki: $($keyFiles.Name -join ', ')" -ForegroundColor DarkGray
+        Write-Host "    Dla instalacji klienta potrzebne sa OBA klucze." -ForegroundColor Yellow
+        exit 1
+    }
+    $clientDest = Copy-KeyToStore -File $clientFile -DestName 'deploy_key_client'
+    Write-Host "  v Klucz klienta: $clientDest" -ForegroundColor Green
 }
 
 # --- Internet ---
@@ -181,21 +206,26 @@ Write-Host "  > Pobieranie instalatora..." -ForegroundColor Cyan
 Invoke-WebRequest -Uri $INSTALL_URL -OutFile $INSTALL_LOCAL -TimeoutSec 60 -UseBasicParsing
 Unblock-File -Path $INSTALL_LOCAL -ErrorAction SilentlyContinue
 $sz = (Get-Item $INSTALL_LOCAL).Length
-if ($sz -lt 10000 -or -not (Select-String -Path $INSTALL_LOCAL -Pattern 'STRUCTURA FACTOR' -Quiet)) {
+# Marker: nazwa skryptu w naglowku instalatora (stabilna, niezalezna od tekstow banera).
+if ($sz -lt 10000 -or -not (Select-String -Path $INSTALL_LOCAL -Pattern 'Install-STRUCTURA-FACTOR' -Quiet)) {
     Write-Host "  x Pobrany plik nie wyglada na instalator ($sz B). Sprawdz internet/CDN." -ForegroundColor Red
     exit 1
 }
 Write-Host "  v Instalator pobrany ($sz B)" -ForegroundColor Green
 
 # --- Uruchomienie instalatora ---
-$installArgs = @()
+$installArgs = @("-Client", $Client)
 if ($MediaCachePath) {
     $installArgs += @("-MediaCachePath", $MediaCachePath)
 }
 
 Write-Host ""
 Write-Host "  === URUCHAMIENIE INSTALATORA ===" -ForegroundColor Cyan
-Write-Host "  Klucze sa w $KEYS_DIR - instalator znajdzie je automatycznie." -ForegroundColor White
+if ($IS_BASE) {
+    Write-Host "  Profil base: klucze w $KEYS_DIR (instalator uzyje klucza core)." -ForegroundColor White
+} else {
+    Write-Host "  Klucze sa w $KEYS_DIR - instalator znajdzie je automatycznie." -ForegroundColor White
+}
 Write-Host ""
 
 & $INSTALL_LOCAL @installArgs

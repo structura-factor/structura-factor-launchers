@@ -1,9 +1,12 @@
-# bootstrap.ps1 - Uniwersalny bootstrap PowerShell dla STRUCTURA FACTOR
-# Pobiera i uruchamia launcher na podstawie bootstrap.yaml z client repo.
+# bootstrap.ps1 - Uniwersalny bootstrap PowerShell dla STRUCTURA
+# Pobiera i uruchamia launcher. Repo klienta jest OPCJONALNE:
+#   - profil "base" (domyslny w instalatorze): bez repo klienta, bez klucza klienta
+#   - profil klienta: bootstrap.yaml z repo structura-clients-<client>
 #
 # Usage:
-#   .\bootstrap.ps1 -Client sawaryn -DeployKeyPath C:\path\to\deploy_key
-#   .\bootstrap.ps1 -Client sawaryn -MediaPath "C:\Users\premek\OneDrive\STRUCTURA\media\"
+#   .\bootstrap.ps1 -Client base -CoreDeployKeyPath C:\path\to\deploy_key_core
+#   .\bootstrap.ps1 -Client <klient> -DeployKeyPath C:\path\to\deploy_key -CoreDeployKeyPath ...
+#   .\bootstrap.ps1 -Client base -MediaPath "C:\Users\ja\OneDrive\STRUCTURA\media\"
 
 [CmdletBinding()]
 param(
@@ -28,12 +31,15 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$LauncherRepo = "structura-factor/structura-factor-launchers@bed910f778c0cf75afb30f9b119655f7e595a401",
     # Jawny wybor launchera (nadpisuje 'launcher' z bootstrap.yaml).
-    # Uzycie: .\bootstrap.ps1 -Client sawaryn -Launcher factor-vm-win11
+    # Uzycie: .\bootstrap.ps1 -Client base -Launcher factor-vm-win11
     # Przydatne przy testach bez specyfikacji klienta.
     [string]$Launcher = "",
 
+    # Repo klienta (z bootstrap.yaml). DOMYSLNIE PUSTE - wyprowadzane z -Client
+    # jako structura-clients-<client>. Profil "base" NIE MA repo klienta:
+    # nie klonujemy go i nie potrzebujemy klucza klienta.
     [Parameter(Mandatory = $false)]
-    [string]$ClientRepo = "structura-factor/structura-clients-sawaryn",
+    [string]$ClientRepo,
 
     [Parameter(Mandatory = $false)]
     [int]$VM_RAM,
@@ -196,78 +202,103 @@ function Get-FileSha256 {
 # Main
 # ============================================================================
 
-Write-StructuraLog "=== STRUCTURA FACTOR - Bootstrap ==="
+Write-StructuraLog "=== STRUCTURA - Bootstrap ==="
 Write-StructuraLog "Client: $Client"
+
+# Profil bazowy: klient = "base" nie ma repo klienta (patrz structura-core/profiles/base).
+$isBaseClient = ($Client -eq "base")
+# Repo klienta wyprowadzamy z -Client, chyba ze podano jawnie w -ClientRepo.
+# (Wczesniej byl tu sztywny default na repo jednego klienta - kazdy inny profil
+# klonowal cudze repo albo padal na kluczu.)
+if (-not $isBaseClient -and -not $ClientRepo) {
+    $ClientRepo = "structura-factor/structura-clients-$Client"
+}
+
 Write-StructuraLog "Launcher repo: $LauncherRepo"
-Write-StructuraLog "Client repo: $ClientRepo"
-if ($DeployKeyPath) { Write-StructuraLog "Deploy key: $DeployKeyPath" }
+if ($isBaseClient) {
+    Write-StructuraLog "Client repo: (brak - profil base)"
+} else {
+    Write-StructuraLog "Client repo: $ClientRepo"
+}
+if ($DeployKeyPath) { Write-StructuraLog "Deploy key (client): $DeployKeyPath" }
+if ($CoreDeployKeyPath) { Write-StructuraLog "Deploy key (core): $CoreDeployKeyPath" }
 if ($MediaPath) { Write-StructuraLog "Media path: $MediaPath" }
 
-# Step 1: Fetch bootstrap.yaml from client repo via git (private repo)
-Write-StructuraLog "Fetching bootstrap.yaml from $ClientRepo (private, via git)..."
+# Uzywane tylko w galezi klienta (klon bootstrap.yaml); dla base zostaje $null.
+$tempClone = $null
 
-$tempClone = "$InstallPath\temp\bootstrap-clone"
-$tempParent = Split-Path $tempClone -Parent
-if (-not (Test-Path $tempParent)) { New-Item -ItemType Directory -Path $tempParent -Force | Out-Null }
-if (Test-Path $tempClone) { Remove-Item $tempClone -Recurse -Force }
-$gitUrl = "git@github.com:$ClientRepo.git"
-
-# Setup SSH for git with deploy key
-if ($DeployKeyPath) {
-    # SSH on Windows (Git for Windows) strips backslashes from -i path
-    # Convert to forward slashes
-    $sshKeyPath = $DeployKeyPath -replace '\\', '/'
-    $env:GIT_SSH_COMMAND = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -i $sshKeyPath -o IdentitiesOnly=yes"
+# Profil base nie ma repo klienta: nie ma czego klonowac ani walidowac.
+# Caly rdzen (SOUL, config, pamiec, skille) przychodzi z structura-core.
+if ($isBaseClient) {
+    Write-StructuraLog "Profil base: pomijam repo klienta i bootstrap.yaml (rdzen z structura-core)"
+    $bootstrapYaml = $null
 } else {
-    Write-StructuraLog "No deploy key provided - git clone may fail for private repos" -Level "WARN"
-}
+    # Step 1: Fetch bootstrap.yaml from client repo via git (private repo)
+    Write-StructuraLog "Fetching bootstrap.yaml from $ClientRepo (private, via git)..."
 
-# Temporarily relax error preference - git writes to stderr which triggers Stop
-$prevEAP = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
+    $tempClone = "$InstallPath\temp\bootstrap-clone"
+    $tempParent = Split-Path $tempClone -Parent
+    if (-not (Test-Path $tempParent)) { New-Item -ItemType Directory -Path $tempParent -Force | Out-Null }
+    if (Test-Path $tempClone) { Remove-Item $tempClone -Recurse -Force }
+    $gitUrl = "git@github.com:$ClientRepo.git"
 
-Write-StructuraLog "Cloning $gitUrl (shallow)..."
-$cloneOutput = & git clone --depth 1 $gitUrl $tempClone 2>&1
-$cloneExit = $LASTEXITCODE
-
-$ErrorActionPreference = $prevEAP
-
-if ($cloneExit -ne 0) {
-    Write-StructuraLog "git clone failed (exit $cloneExit): $cloneOutput" -Level "ERROR"
-    Write-Host ""
-    Write-Host "  Nie udalo sie sklonowac repo: $ClientRepo" -ForegroundColor Yellow
-    Write-Host "  Sprawdz czy deploy key jest poprawny." -ForegroundColor Yellow
-    Write-Host "  Klucz: $DeployKeyPath" -ForegroundColor DarkGray
-    Write-Host "  Blad: $cloneOutput" -ForegroundColor DarkGray
-    exit 1
-}
-
-Write-StructuraLog "git clone successful"
-
-$bootstrapYamlPath = "$tempClone\bootstrap.yaml"
-if (-not (Test-Path $bootstrapYamlPath)) {
-    Write-StructuraLog "bootstrap.yaml not found in repo root" -Level "ERROR"
-    Write-Host "  Plik bootstrap.yaml nie znaleziony w repo: $ClientRepo" -ForegroundColor Yellow
-    exit 1
-}
-
-Write-StructuraLog "bootstrap.yaml found: $bootstrapYamlPath"
-Remove-Item env:\GIT_SSH_COMMAND -ErrorAction SilentlyContinue
-
-# Step 2: Validate bootstrap.yaml schema
-$bootstrapYaml = Get-Content $bootstrapYamlPath -Raw
-Write-StructuraLog "Validating bootstrap.yaml schema..."
-$validationErrors = Test-BootstrapYaml -YamlContent $bootstrapYaml
-
-if ($validationErrors.Count -gt 0) {
-    Write-StructuraLog "bootstrap.yaml validation failed:" -Level "ERROR"
-    foreach ($err in $validationErrors) {
-        Write-StructuraLog "  $err" -Level "ERROR"
+    # Setup SSH for git with deploy key
+    if ($DeployKeyPath) {
+        # SSH on Windows (Git for Windows) strips backslashes from -i path
+        # Convert to forward slashes
+        $sshKeyPath = $DeployKeyPath -replace '\\', '/'
+        $env:GIT_SSH_COMMAND = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -i $sshKeyPath -o IdentitiesOnly=yes"
+    } else {
+        Write-StructuraLog "No deploy key provided - git clone may fail for private repos" -Level "WARN"
     }
-    exit 1
-}
 
-Write-StructuraLog "bootstrap.yaml schema valid."
+    # Temporarily relax error preference - git writes to stderr which triggers Stop
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+
+    Write-StructuraLog "Cloning $gitUrl (shallow)..."
+    $cloneOutput = & git clone --depth 1 $gitUrl $tempClone 2>&1
+    $cloneExit = $LASTEXITCODE
+
+    $ErrorActionPreference = $prevEAP
+
+    if ($cloneExit -ne 0) {
+        Write-StructuraLog "git clone failed (exit $cloneExit): $cloneOutput" -Level "ERROR"
+        Write-Host ""
+        Write-Host "  Nie udalo sie sklonowac repo: $ClientRepo" -ForegroundColor Yellow
+        Write-Host "  Sprawdz czy deploy key jest poprawny." -ForegroundColor Yellow
+        Write-Host "  Klucz: $DeployKeyPath" -ForegroundColor DarkGray
+        Write-Host "  Blad: $cloneOutput" -ForegroundColor DarkGray
+        exit 1
+    }
+
+    Write-StructuraLog "git clone successful"
+
+    $bootstrapYamlPath = "$tempClone\bootstrap.yaml"
+    if (-not (Test-Path $bootstrapYamlPath)) {
+        Write-StructuraLog "bootstrap.yaml not found in repo root" -Level "ERROR"
+        Write-Host "  Plik bootstrap.yaml nie znaleziony w repo: $ClientRepo" -ForegroundColor Yellow
+        exit 1
+    }
+
+    Write-StructuraLog "bootstrap.yaml found: $bootstrapYamlPath"
+    Remove-Item env:\GIT_SSH_COMMAND -ErrorAction SilentlyContinue
+
+    # Step 2: Validate bootstrap.yaml schema
+    $bootstrapYaml = Get-Content $bootstrapYamlPath -Raw
+    Write-StructuraLog "Validating bootstrap.yaml schema..."
+    $validationErrors = Test-BootstrapYaml -YamlContent $bootstrapYaml
+
+    if ($validationErrors.Count -gt 0) {
+        Write-StructuraLog "bootstrap.yaml validation failed:" -Level "ERROR"
+        foreach ($err in $validationErrors) {
+            Write-StructuraLog "  $err" -Level "ERROR"
+        }
+        exit 1
+    }
+
+    Write-StructuraLog "bootstrap.yaml schema valid."
+}
 
 # Step 3: Ustal launcher
 # Kolejnosc: parametr -Launcher > pole 'launcher' w bootstrap.yaml > manifest
@@ -285,6 +316,14 @@ if (-not $launcherName -and $bootstrapYaml) {
         $launcherName = $Matches[1].Trim().Trim('"').Trim("'")
         Write-StructuraLog "Launcher z bootstrap.yaml: $launcherName"
     }
+}
+
+# 3c-pre. Profil base nie ma bootstrap.yaml, wiec nie ma czego pytac: bierzemy
+# launcher domyslny (ten sam, ktory wskazuje 'default:' w launchers.yaml).
+# Jawny -Launcher nadal ma priorytet (obsluzony w 3a).
+if (-not $launcherName -and $isBaseClient) {
+    $launcherName = "factor-vm-win11"
+    Write-StructuraLog "Profil base: launcher domyslny $launcherName (bez pytania)"
 }
 
 # 3c. Brak wskazania -> manifest launchers.yaml + wybor interaktywny
@@ -337,7 +376,7 @@ if (-not $launcherName) {
 if (-not $launcherName) {
     Write-StructuraLog "Nie ustalono launchera. Podaj -Launcher albo dodaj 'launcher' do bootstrap.yaml klienta." -Level "ERROR"
     Write-Host ""
-    Write-Host "  Przyklad: .\bootstrap.ps1 -Client sawaryn -Launcher factor-vm-win11" -ForegroundColor Yellow
+    Write-Host "  Przyklad: .\bootstrap.ps1 -Client base -Launcher factor-vm-win11" -ForegroundColor Yellow
     exit 1
 }
 
@@ -417,7 +456,7 @@ if ($exitCode -ne 0) {
 
 Write-StructuraLog "=== Bootstrap complete ==="
 
-# Cleanup temp files
-Remove-Item $tempClone -Recurse -Force -ErrorAction SilentlyContinue
+# Cleanup temp files (dla profilu base $tempClone jest pusty - nie ma czego usuwac)
+if ($tempClone -and (Test-Path $tempClone)) { Remove-Item $tempClone -Recurse -Force -ErrorAction SilentlyContinue }
 if ($setupBatPath) { Remove-Item $setupBatPath -Force -ErrorAction SilentlyContinue }
 Remove-Item $setupPs1Path -Force -ErrorAction SilentlyContinue

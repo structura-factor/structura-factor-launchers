@@ -2,11 +2,20 @@
 #  Install-STRUCTURA-FACTOR.ps1
 #  Jeden plik - wszystko w jednym. Pobiera bootstrap, szuka klucza, stawia VM.
 #  Uruchom jako Administrator.
+#
+#  DOMYSLNY PROFIL: base (uniwersalny). Klient = "base" NIE ma repo klienta -
+#  caly rdzen (SOUL, config Hermesa, pamiec, skille) przychodzi z structura-core
+#  (profiles/base + skills). Repo klienta jest opcjonalne:
+#    .\Install-STRUCTURA-FACTOR.ps1 -Client base        (domyslnie)
+#    .\Install-STRUCTURA-FACTOR.ps1 -Client <klient>    (klient z repo)
 # ============================================================================
 
 [CmdletBinding()]
 param(
     [string]$InstallPath = "C:\STRUCTURA",
+
+    # Profil instalacji. "base" = uniwersalny (bez repo klienta).
+    [string]$Client = "base",
 
     [string]$MediaCachePath,
     [int]$VM_RAM = 4096,
@@ -20,7 +29,11 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # --- Stale ---
-$CLIENT = "sawaryn"
+$CLIENT = $Client
+if (-not $CLIENT) { $CLIENT = "base" }
+$CLIENT = $CLIENT.Trim()
+# Profil bazowy: brak repo klienta -> brak klucza klienta i brak repo do klonowania.
+$IS_BASE = ($CLIENT -eq "base")
 $LAUNCHER_REPO = "structura-factor/structura-factor-launchers"
 $BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@3af9fd45aac94b6cb0976b7dcc348800cad7ea15/bootstrap.ps1"
 $BASE_DIR = $InstallPath
@@ -40,11 +53,15 @@ function W-Log([string]$Msg) {
 # --- Banner ---
 Write-Host ""
 Write-Host "+============================================================+" -ForegroundColor Cyan
-Write-Host "|       STRUCTURA FACTOR - Instalator v1.2                   |" -ForegroundColor Cyan
-Write-Host "|       Personal Assistant prawniczy                          |" -ForegroundColor Cyan
+Write-Host "|       STRUCTURA - Asystent AI - Instalator v1.2             |" -ForegroundColor Cyan
+Write-Host "|       Instalacja lokalna (Ubuntu w VirtualBox)               |" -ForegroundColor Cyan
 Write-Host "|                                                             |" -ForegroundColor Cyan
-Write-Host "|  Klient: Sawaryn i Partnerzy                                |" -ForegroundColor White
-Write-Host "|  Folder: $InstallPath                                        |" -ForegroundColor White
+if ($IS_BASE) {
+    Write-Host "|  Profil: base (uniwersalny, bez repo klienta)               |" -ForegroundColor White
+} else {
+    Write-Host "|  Profil: klient $CLIENT" -ForegroundColor White
+}
+Write-Host "|  Folder: $InstallPath" -ForegroundColor White
 Write-Host "+============================================================+" -ForegroundColor Cyan
 Write-Host ""
 
@@ -65,7 +82,7 @@ Write-Host "  > Tworzenie struktury folderow..." -ForegroundColor Cyan
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
 }
 Write-Host "  v Struktura gotowa: $BASE_DIR" -ForegroundColor Green
-Write-Host "    $KEYS_DIR   (wklej tu deploy key)" -ForegroundColor DarkGray
+Write-Host "    $KEYS_DIR   (deploy key do structura-core)" -ForegroundColor DarkGray
 Write-Host "    $MEDIA_DIR  (pobrane ISO + VBox)" -ForegroundColor DarkGray
 Write-Host "    $LOGS_DIR   (logi)" -ForegroundColor DarkGray
 Write-Host ""
@@ -85,10 +102,18 @@ Write-Host "  v Admin: tak" -ForegroundColor Green
 W-Log "Admin: OK"
 
 # --- Deploy key: zapytaj zanim cokolwiek pobierze ---
+# Klucz prywatny SSH (deploy key) jest potrzebny do sklonowania PRYWATNEGO
+# repo structura-core. Profil base nie ma repo klienta, wiec w tym trybie
+# pytamy WYLACZNIE o klucz core - klucz klienta nie jest do niczego potrzebny.
 Write-Host ""
-Write-Host "  === Klucz deploy SSH ===" -ForegroundColor Cyan
-Write-Host "  Do instalacji potrzebny jest klucz prywatny SSH (deploy key)." -ForegroundColor White
-Write-Host "  Plik klucza zostal przekazany osobno (email, pendrive, itp.)." -ForegroundColor White
+if ($IS_BASE) {
+    Write-Host "  === Klucz deploy (structura-core) ===" -ForegroundColor Cyan
+    Write-Host "  Instalacja bazowa (base): potrzebny jest tylko klucz do structura-core." -ForegroundColor White
+} else {
+    Write-Host "  === Klucze deploy SSH ===" -ForegroundColor Cyan
+    Write-Host "  Potrzebne sa dwa klucze prywatne SSH: do structura-core i do repo klienta." -ForegroundColor White
+}
+Write-Host "  Plik(i) klucza przekazane osobno (email, pendrive, itp.)." -ForegroundColor White
 Write-Host ""
 Write-Host "  Opcje:" -ForegroundColor White
 Write-Host "    1. Wskaz sciezke do pliku klucza (np. C:\Users\ja\Desktop\deploy_key)" -ForegroundColor DarkGray
@@ -96,37 +121,48 @@ Write-Host "    2. Wklej klucz do folderu $KEYS_DIR i nacisnij Enter" -Foregroun
 Write-Host "    3. Wklej zawartosc klucza tutaj (skrypt zapisze go automatycznie)" -ForegroundColor DarkGray
 Write-Host ""
 $deployKeyPath = $null
+$coreDeployKeyPath = $null
 
 # Najpierw sprawdz czy juz cos jest w klucze\
 $keyFiles = Get-ChildItem -Path $KEYS_DIR -File -ErrorAction SilentlyContinue | Where-Object {
     $_.Name -notmatch '\.pub$' -and $_.Name -notmatch '\.txt$' -and $_.Name -notmatch '\.md$'
 }
-# GitHub nie pozwala uzyc jednego deploy keya w dwoch repo, wiec instalka
-# potrzebuje DWOCH kluczy: klienta (structura-clients-<client>) i core.
+# GitHub nie pozwala uzyc jednego deploy keya w dwoch repo, wiec instalacja
+# klienta potrzebuje DWOCH kluczy: klienta (structura-clients-<client>) i core.
 # Rozpoznajemy je po nazwie pliku; reszta idzie jako klucz klienta.
-$coreDeployKeyPath = $null
+# Przy profilu base klucz klienta nie istnieje - liczy sie tylko 'core'.
 if ($keyFiles) {
-    # Wybor deterministyczny (Get-ChildItem sortuje alfabetycznie, wiec samo
-    # "First 1" bralo stary plik 'deploy_key' zamiast 'deploy_key_client').
     $coreFile = $keyFiles | Where-Object { $_.Name -match 'core' } | Select-Object -First 1
-    $clientFile = $keyFiles | Where-Object { $_.Name -match 'client' } | Select-Object -First 1
-    if (-not $clientFile) {
-        $clientFile = $keyFiles | Where-Object { $_.Name -notmatch 'core' -and $_.Name -ne 'deploy_key' } | Select-Object -First 1
-    }
-    if (-not $clientFile) {
-        $clientFile = $keyFiles | Where-Object { $_.Name -notmatch 'core' } | Select-Object -First 1
-    }
     if ($coreFile) {
         $coreDeployKeyPath = $coreFile.FullName
         Write-Host "  v Klucz core: klucze\$($coreFile.Name)" -ForegroundColor Green
     }
-    $deployKeyPath = if ($clientFile) { $clientFile.FullName } else { $keyFiles[0].FullName }
-    Write-Host "  v Klucz klienta: klucze\$(Split-Path $deployKeyPath -Leaf)" -ForegroundColor Green
+    if (-not $IS_BASE) {
+        # Wybor deterministyczny (Get-ChildItem sortuje alfabetycznie, wiec samo
+        # "First 1" bralo stary plik 'deploy_key' zamiast 'deploy_key_client').
+        $clientFile = $keyFiles | Where-Object { $_.Name -match 'client' } | Select-Object -First 1
+        if (-not $clientFile) {
+            $clientFile = $keyFiles | Where-Object { $_.Name -notmatch 'core' -and $_.Name -ne 'deploy_key' } | Select-Object -First 1
+        }
+        if (-not $clientFile) {
+            $clientFile = $keyFiles | Where-Object { $_.Name -notmatch 'core' } | Select-Object -First 1
+        }
+        if ($clientFile) {
+            $deployKeyPath = $clientFile.FullName
+            Write-Host "  v Klucz klienta: klucze\$(Split-Path $deployKeyPath -Leaf)" -ForegroundColor Green
+        }
+    }
     if (-not $coreFile) {
         Write-Host "  ! Brak klucza 'core' w $KEYS_DIR - klon structura-core padnie." -ForegroundColor Yellow
         Write-Host "    Skopiuj deploy_key_core (deploy key z repo structura-core)." -ForegroundColor Yellow
     }
-} else {
+}
+
+# Pytaj tylko o to, czego BRAKUJE:
+#   base    -> brak klucza core
+#   klient  -> brak klucza klienta (brak core zostaje ostrzezeniem, jak dotad)
+$needsKeyPrompt = if ($IS_BASE) { -not $coreDeployKeyPath } else { -not $deployKeyPath }
+if ($needsKeyPrompt) {
     $keyChoice = Read-Host "  Wybierz opcje (1/2/3)"
     switch ($keyChoice) {
         "1" {
@@ -134,8 +170,8 @@ if ($keyFiles) {
             if ($keyPathInput -and $keyPathInput.Trim() -ne "") {
                 $keyPathInput = $keyPathInput.Trim().Trim('"').Trim("'")
                 if (Test-Path $keyPathInput) {
-                    $deployKeyPath = $keyPathInput
-                    Write-Host "  v Klucz: $deployKeyPath" -ForegroundColor Green
+                    if ($IS_BASE) { $coreDeployKeyPath = $keyPathInput } else { $deployKeyPath = $keyPathInput }
+                    Write-Host "  v Klucz: $keyPathInput" -ForegroundColor Green
                 } else {
                     Write-Host "  x Plik nie istnieje: $keyPathInput" -ForegroundColor Red
                     exit 1
@@ -151,7 +187,16 @@ if ($keyFiles) {
             $keyFiles = Get-ChildItem -Path $KEYS_DIR -File -ErrorAction SilentlyContinue | Where-Object {
                 $_.Name -notmatch '\.pub$' -and $_.Name -notmatch '\.txt$' -and $_.Name -notmatch '\.md$'
             }
-            if ($keyFiles) {
+            $coreFile = $keyFiles | Where-Object { $_.Name -match 'core' } | Select-Object -First 1
+            if ($coreFile) { $coreDeployKeyPath = $coreFile.FullName }
+            if ($IS_BASE) {
+                if ($coreDeployKeyPath) {
+                    Write-Host "  v Klucz core: klucze\$(Split-Path $coreDeployKeyPath -Leaf)" -ForegroundColor Green
+                } else {
+                    Write-Host "  x Nadal nie znaleziono klucza w $KEYS_DIR" -ForegroundColor Red
+                    exit 1
+                }
+            } elseif ($keyFiles) {
                 $deployKeyPath = $keyFiles[0].FullName
                 Write-Host "  v Klucz: klucze\$($keyFiles[0].Name)" -ForegroundColor Green
             } else {
@@ -170,9 +215,15 @@ if ($keyFiles) {
             }
             if ($keyLines.Count -gt 0) {
                 $keyContent = $keyLines -join "`n"
-                $deployKeyPath = "$KEYS_DIR\deploy_key"
-                $keyContent | Out-File -FilePath $deployKeyPath -Encoding ASCII -NoNewline
-                Write-Host "  v Klucz zapisany: $deployKeyPath" -ForegroundColor Green
+                if ($IS_BASE) {
+                    $coreDeployKeyPath = "$KEYS_DIR\deploy_key_core"
+                    $keyContent | Out-File -FilePath $coreDeployKeyPath -Encoding ASCII -NoNewline
+                    Write-Host "  v Klucz zapisany: $coreDeployKeyPath" -ForegroundColor Green
+                } else {
+                    $deployKeyPath = "$KEYS_DIR\deploy_key"
+                    $keyContent | Out-File -FilePath $deployKeyPath -Encoding ASCII -NoNewline
+                    Write-Host "  v Klucz zapisany: $deployKeyPath" -ForegroundColor Green
+                }
             } else {
                 Write-Host "  x Pusty klucz." -ForegroundColor Red
                 exit 1
@@ -185,20 +236,23 @@ if ($keyFiles) {
     }
 }
 
-# Weryfikuj zawartosc klucza - zatrzymaj jesli to nie klucz prywatny
-$keyRaw = Get-Content $deployKeyPath -Raw
-if ($keyRaw -notmatch 'BEGIN OPENSSH PRIVATE KEY' -and $keyRaw -notmatch 'BEGIN PRIVATE KEY') {
-    Write-Host "  x To nie jest klucz prywatny SSH." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "  Wklejony tekst zaczyna sie od 'ssh-ed25519' - to jest KLUCZ PUBLICZNY." -ForegroundColor Yellow
-    Write-Host "  Potrzebny jest KLUCZ PRYWATNY - zaczyna sie od:" -ForegroundColor Yellow
-    Write-Host "    -----BEGIN OPENSSH PRIVATE KEY-----" -ForegroundColor White
-    Write-Host ""
-    Write-Host "  Klucz prywatny to plik bez rozszerzenia .pub" -ForegroundColor DarkGray
-    Write-Host "  Usun zly plik z $KEYS_DIR i uruchom skrypt ponownie." -ForegroundColor Yellow
-    exit 1
-} else {
-    Write-Host "  v Klucz prywatny SSH: zweryfikowany" -ForegroundColor Green
+# Weryfikuj zawartosc klucza klienta - zatrzymaj jesli to nie klucz prywatny.
+# Przy profilu base klucza klienta nie ma, wiec nie ma czego weryfikowac.
+if (-not $IS_BASE) {
+    $keyRaw = Get-Content $deployKeyPath -Raw
+    if ($keyRaw -notmatch 'BEGIN OPENSSH PRIVATE KEY' -and $keyRaw -notmatch 'BEGIN PRIVATE KEY') {
+        Write-Host "  x To nie jest klucz prywatny SSH." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Wklejony tekst zaczyna sie od 'ssh-ed25519' - to jest KLUCZ PUBLICZNY." -ForegroundColor Yellow
+        Write-Host "  Potrzebny jest KLUCZ PRYWATNY - zaczyna sie od:" -ForegroundColor Yellow
+        Write-Host "    -----BEGIN OPENSSH PRIVATE KEY-----" -ForegroundColor White
+        Write-Host ""
+        Write-Host "  Klucz prywatny to plik bez rozszerzenia .pub" -ForegroundColor DarkGray
+        Write-Host "  Usun zly plik z $KEYS_DIR i uruchom skrypt ponownie." -ForegroundColor Yellow
+        exit 1
+    } else {
+        Write-Host "  v Klucz prywatny SSH: zweryfikowany" -ForegroundColor Green
+    }
 }
 
 # Ten sam test dla klucza core (jesli podany)
@@ -211,7 +265,9 @@ if ($coreDeployKeyPath) {
         exit 1
     }
 }
-W-Log "DeployKey: $deployKeyPath"
+# Do logu trafiaja SCIEZKI, nigdy zawartosc kluczy.
+if ($deployKeyPath) { W-Log "DeployKey(client): $deployKeyPath" }
+if ($coreDeployKeyPath) { W-Log "DeployKey(core): $coreDeployKeyPath" }
 
 # --- RAM ---
 # UWAGA: prog zalezny od profilu VM wybieranego nizej. Absolutne minimum dla
@@ -432,8 +488,12 @@ try {
 
 # --- Uruchomienie ---
 Write-Host ""
-Write-Host "  === Rozpoczecie instalacji STRUCTURA FACTOR ===" -ForegroundColor Cyan
-Write-Host "  Klient:  $CLIENT" -ForegroundColor White
+Write-Host "  === Rozpoczecie instalacji STRUCTURA ===" -ForegroundColor Cyan
+if ($IS_BASE) {
+    Write-Host "  Profil:  base (uniwersalny - bez repo klienta)" -ForegroundColor White
+} else {
+    Write-Host "  Klient:  $CLIENT" -ForegroundColor White
+}
 Write-Host "  Folder:  $BASE_DIR" -ForegroundColor White
 Write-Host "  VM:      ${VM_RAM}MB RAM, $VM_CPU vCPU, $([math]::Round($VM_DISK/1024))GB" -ForegroundColor White
 Write-Host "  Media:   $MEDIA_DIR" -ForegroundColor White
@@ -441,7 +501,11 @@ if ($MediaCachePath) { Write-Host "  Cache:   $MediaCachePath" -ForegroundColor 
 if ($EnableLUKS) { Write-Host "  LUKS:    wlaczony" -ForegroundColor White }
 Write-Host ""
 
-$ba = @("-Client", $CLIENT, "-DeployKeyPath", "'$deployKeyPath'", "-MediaPath", "'$MEDIA_DIR'", "-InstallPath", "'$BASE_DIR'")
+$ba = @("-Client", $CLIENT, "-MediaPath", "'$MEDIA_DIR'", "-InstallPath", "'$BASE_DIR'")
+# Klucz klienta przekazujemy TYLKO gdy istnieje (profil base go nie ma).
+if ($deployKeyPath) { $ba += @("-DeployKeyPath", "'$deployKeyPath'") }
+# Repo klienta wyprowadza bootstrap z -Client; dla base nie ma czego wskazywac.
+if (-not $IS_BASE) { $ba += @("-ClientRepo", "'structura-factor/structura-clients-$CLIENT'") }
 if ($coreDeployKeyPath) { $ba += @("-CoreDeployKeyPath", "'$coreDeployKeyPath'") }
 if ($SkipMediaVerify) { $ba += "-SkipMediaVerify" }
 if ($VM_RAM -ne 4096) { $ba += @("-VM_RAM", $VM_RAM) }
