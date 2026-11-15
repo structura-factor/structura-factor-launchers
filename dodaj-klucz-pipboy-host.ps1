@@ -1,4 +1,4 @@
-# DODAJ-KLUCZ-PIPBOY-HOST v4 — public (irm | iex)
+# DODAJ-KLUCZ-PIPBOY-HOST v4 - public (irm | iex)
 # Dodaje klucz publiczny asystenta do OpenSSH na tym komputerze.
 # Log: C:\PIPBOY-LOG.txt
 $ErrorActionPreference = 'Continue'
