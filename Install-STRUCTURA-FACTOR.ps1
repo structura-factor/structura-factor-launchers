@@ -508,6 +508,11 @@ Write-Host ""
 $ba = @("-Client", $CLIENT, "-MediaPath", "'$MEDIA_DIR'", "-InstallPath", "'$BASE_DIR'")
 # Klucz klienta przekazujemy TYLKO gdy istnieje (profil base go nie ma).
 if ($deployKeyPath) { $ba += @("-DeployKeyPath", "'$deployKeyPath'") }
+# BASE: klucz core pelni role klucza klienta. Bez tego ETAP 3 (publiczny klucz
+# do cloud-init ssh_authorized_keys -> host SSH-uje sie prywatna polowa
+# id_ed25519 przez Install-DeployKey) padl z "Brak klucza publicznego"
+# przed utworzeniem VM (dowod: run 2026-11-17 00:15, structura-base).
+if ($IS_BASE -and -not $deployKeyPath -and $coreDeployKeyPath) { $ba += @("-DeployKeyPath", "'$coreDeployKeyPath'") }
 # Repo klienta wyprowadza bootstrap z -Client; dla base nie ma czego wskazywac.
 if (-not $IS_BASE) { $ba += @("-ClientRepo", "'structura-factor/structura-clients-$CLIENT'") }
 if ($coreDeployKeyPath) { $ba += @("-CoreDeployKeyPath", "'$coreDeployKeyPath'") }
