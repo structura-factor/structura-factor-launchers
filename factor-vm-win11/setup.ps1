@@ -1531,7 +1531,32 @@ function Get-VmIpAndSsh {
     $lastProbeLine = ''
     $maxIter = 90          # 90 x 30s = 45 min
     for ($i = 0; $i -lt $maxIter; $i++) {
-        $probe = ssh -v -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=8 -o BatchMode=yes -i $probeKey $sshHost "echo SSH_OK" 2>&1
+        # F44c FALSZY SUKCES/WISENIE (dowod: run 2026-11-17 00:22-00:38, 0 iteracji
+        # przez 16 min): nat listener akceptuje TCP, a gosc podczas subiquity
+        # milczy na 22 -> ssh.exe czeka na banner BEZ LIMITU. Zanim odpalimy
+        # pelne ssh, sprawdza TCP+banner w ograniczeniu (5 s connect + 15 s
+        # na banner). Brak bannera = iteracja bez ssh (instalacja w toku).
+        $tcpStage = New-Object Net.Sockets.TcpClient
+        $tcpBanner = $null
+        $tcpConnectOk = $false
+        try {
+            $tcpConnectOk = $tcpStage.ConnectAsync($sshHost, $sshPort).Wait(5000)
+            if ($tcpConnectOk) {
+                $tcpStage.Client.ReceiveTimeout = 15000
+                $tcpBuf = New-Object byte[] 128
+                try {
+                    $tcpN = $tcpStage.Client.Receive($tcpBuf)
+                    $tcpBanner = [Text.Encoding]::ASCII.GetString($tcpBuf, 0, $tcpN)
+                } catch { $tcpBanner = $null }
+            }
+        } catch { $tcpConnectOk = $false }
+        $tcpStage.Close()
+        if ($tcpConnectOk -and $tcpBanner) {
+            $probe = ssh -v -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=8 -o BatchMode=yes -i $probeKey $sshHost "echo SSH_OK" 2>&1
+        } else {
+            # Guest milczy (instalacja w toku) - nie odpalamy pelnego ssh.
+            $probe = @(("[F44c] brak bannera ssh (connect=" + $tcpConnectOk + ", instalacja w toku)"))
+        }
         # Zapamietaj OSTATNIA sensowna linie - bez tego nie wiemy, CZY sshd
         # w ogole odpowiada (Connection refused/reset = brak sshd; Permission
         # denied = sshd jest, czekamy na klucz; timeout = VM nieosiagalna).
