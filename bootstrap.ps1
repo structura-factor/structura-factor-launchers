@@ -422,6 +422,7 @@ if ($VM_RAM) { $setupArgs += @("-VM_RAM", $VM_RAM) }
 if ($VM_CPU) { $setupArgs += @("-VM_CPU", $VM_CPU) }
 if ($VM_DISK) { $setupArgs += @("-VM_DISK", $VM_DISK) }
 if ($Quiet) { $setupArgs += "-Quiet" }
+if ($OllamaApiKey) { $setupArgs += @("-OllamaApiKey", $OllamaApiKey) }
 if ($PSBoundParameters.ContainsKey("Verbose")) { $setupArgs += "-Verbose" }
 
 # Step 9: Execute launcher
@@ -437,7 +438,7 @@ foreach ($arg in $setupArgs) {
         $setupCmd += " '$arg'"
     }
 }
-Write-StructuraLog "Setup command: $setupCmd"
+Write-StructuraLog "Setup command: $($setupCmd -replace '\-OllamaApiKey ''[^'']*''', '-OllamaApiKey ''***''')"
 
 try {
     Invoke-Expression $setupCmd

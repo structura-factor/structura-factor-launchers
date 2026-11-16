@@ -17,6 +17,10 @@ param(
     # Profil instalacji. "base" = uniwersalny (bez repo klienta).
     [string]$Client = "base",
 
+    # Klucz API Ollama Cloud (przekazywany dalej do setup.ps1 ETAP 7;
+    # w logach JEGO WARTOSC JEST REDAGOWANA).
+    [string]$OllamaApiKey,
+
     [string]$MediaCachePath,
     [int]$VM_RAM = 4096,
     [int]$VM_CPU = 2,
@@ -514,7 +518,7 @@ if ($VM_DISK -ne 40960) { $ba += @("-VM_DISK", $VM_DISK) }
 if ($EnableLUKS) { $ba += @("-EnableLUKS", "-LUKSPassword", "'$LUKSPassword'") }
 # Nie przekazuj -Quiet/-Verbose - konflikt z CmdletBinding w bootstrap.ps1
 
-W-Log "bootstrap args: $($ba -join ' ')"
+W-Log "bootstrap args: $(($ba -join ' ') -replace '\-OllamaApiKey ''[^'']*''', '-OllamaApiKey ''***''')"
 Unblock-File -Path $bp -ErrorAction SilentlyContinue
 
 # Build command string and execute via iex - more reliable than splatting with & operator
