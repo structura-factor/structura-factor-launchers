@@ -29,7 +29,7 @@ param(
     [switch]$SkipMediaVerify,
 
     [Parameter(Mandatory = $false)]
-    [string]$LauncherRepo = "structura-factor/structura-factor-launchers@ad7d228ad6fc2442282ea4f22eacd82e36778f57",
+    [string]$LauncherRepo = "structura-factor/structura-factor-launchers@330f7a8d01adbd566d84844b53462ac21a71abb5",
     # Jawny wybor launchera (nadpisuje 'launcher' z bootstrap.yaml).
     # Uzycie: .\bootstrap.ps1 -Client base -Launcher factor-vm-win11
     # Przydatne przy testach bez specyfikacji klienta.
@@ -427,7 +427,12 @@ if ($PSBoundParameters.ContainsKey("Verbose")) { $setupArgs += "-Verbose" }
 
 # Step 9: Execute launcher
 Write-StructuraLog "Executing launcher: $launcherName/setup.ps1"
-Write-StructuraLog "Arguments: $($setupArgs -join ' ')"
+# Fala 46b (dowod RUN 6: wyciek klucza ollama w install-console-r6.log): redakcja
+# jawnej wartosci -OllamaApiKey takze w linii "Arguments:" (dotychczas "***" bylo
+# tylko w linii "Setup command:"). Klucze nie moga trafiac do logow w czytelnej postaci.
+$argsForLog = $setupArgs -join ' '
+if ($OllamaApiKey) { $argsForLog = $argsForLog -replace [regex]::Escape($OllamaApiKey), '***' }
+Write-StructuraLog "Arguments: $argsForLog"
 
 # Build command string - more reliable than splatting when loaded via Invoke-Expression
 $setupCmd = "& '$launcherDir\setup.ps1'"
