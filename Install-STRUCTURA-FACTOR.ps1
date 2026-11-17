@@ -39,7 +39,7 @@ $CLIENT = $CLIENT.Trim()
 # Profil bazowy: brak repo klienta -> brak klucza klienta i brak repo do klonowania.
 $IS_BASE = ($CLIENT -eq "base")
 $LAUNCHER_REPO = "structura-factor/structura-factor-launchers"
-$BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@fb6e6b493e680e8ee69ac0255b56e97e81a80a15/bootstrap.ps1"
+$BOOTSTRAP_URL = "https://cdn.jsdelivr.net/gh/structura-factor/structura-factor-launchers@c3f26af9d7323b714f38c59630f0a81b44e7448b/bootstrap.ps1"
 $BASE_DIR = $InstallPath
 $KEYS_DIR = "$BASE_DIR\klucze"
 $MEDIA_DIR = "$BASE_DIR\media"
