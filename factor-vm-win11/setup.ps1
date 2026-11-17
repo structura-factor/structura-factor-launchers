@@ -73,7 +73,7 @@ $SCRIPT_VERSION = "1.0"
 # instalatora byla uzyta. Bez tego kazdy log wygladal identycznie i nie dalo
 # sie powiedziec "czy to regresja, czy inny run".
 # UWAGA: aktualizuj przy kazdym commicie zmieniajacym setup.ps1.
-$SCRIPT_BUILD = "F43-20261116"
+$SCRIPT_BUILD = "F46-20261117"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
