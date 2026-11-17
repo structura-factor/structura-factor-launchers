@@ -1552,7 +1552,19 @@ function Get-VmIpAndSsh {
         } catch { $tcpConnectOk = $false }
         $tcpStage.Close()
         if ($tcpConnectOk -and $tcpBanner) {
-            $probe = ssh -v -p $sshPort -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=8 -o BatchMode=yes -i $probeKey $sshHost "echo SSH_OK" 2>&1
+            # F44d (dowod: run-3, po self-heal z dysku: [25min] - wisial juz POST-bannera,
+            # ConnectTimeout ogranicza TYLKO TCP). Pelne ssh w ograniczonym procesie
+            # (Start-Process + WaitForExit), inaczej ssh wisia az do killa.
+            $tmpProbeOut = Join-Path $env:TEMP ('ssh-probe-' + [guid]::NewGuid().ToString('N') + '.txt')
+            $argsStr = '-v -p ' + $sshPort + ' -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=8 -o BatchMode=yes -i "' + $probeKey + '" ' + $sshHost + ' echo SSH_OK'
+            $proc = Start-Process -FilePath 'ssh.exe' -ArgumentList $argsStr -NoNewWindow -PassThru -RedirectStandardOutput $tmpProbeOut -RedirectStandardError ($tmpProbeOut + '.err') -ErrorAction Continue
+            if ($proc.WaitForExit(40000)) {
+                $probe = @(Get-Content $tmpProbeOut -ErrorAction SilentlyContinue) + @(Get-Content ($tmpProbeOut + '.err') -ErrorAction SilentlyContinue)
+            } else {
+                try { Stop-Process -Id $proc.Id -ErrorAction SilentlyContinue } catch { }
+                $probe = @('SSH_PROBE_TIMEOUT (F44d - ssh nie odpowiedzial w 40 s)')
+            }
+            Remove-Item -Path $tmpProbeOut, ($tmpProbeOut + '.err') -ErrorAction SilentlyContinue
         } else {
             # Guest milczy (instalacja w toku) - nie odpalamy pelnego ssh.
             $probe = @(("[F44c] brak bannera ssh (connect=" + $tcpConnectOk + ", instalacja w toku)"))
