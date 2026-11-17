@@ -137,3 +137,11 @@ key NIGDY nie był wstrzykiwany do stack .env).
 - Duplicati-check: grep łapał 'structura-duplicati', kontener nazywa się 'duplicati'
   (compose container_name) → fałszywy WARN przy zdrowym kontenerze; obie nazwy akceptowane.
 - Build: F48-20261117 → F49-20261117.
+
+### 48f — setup.ps1: ostatnia bomba EAP w Install-VmAutostart (RUN 11 evidence)
+
+- RUN 11 przeszedł prawie cały ETAP 8 (share zarejestrowany + ZAMONTOWANY w runie,
+  autostart task utworzony + zweryfikowany, Duplicati-check OK po 48e) i umarł na:
+  `modifyvm --autostart-enabled on` przy DZIAŁAJĄCEJ VM → stderr "already locked for a
+  session" → globalne EAP='Stop' → TerminatingError. Fix: blok przy EAP='Continue' +
+  rc-based JAWNE pomijanie (schtasks pokrywa autostart). Build F50-20261117.

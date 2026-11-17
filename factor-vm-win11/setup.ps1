@@ -73,7 +73,7 @@ $SCRIPT_VERSION = "1.0"
 # instalatora byla uzyta. Bez tego kazdy log wygladal identycznie i nie dalo
 # sie powiedziec "czy to regresja, czy inny run".
 # UWAGA: aktualizuj przy kazdym commicie zmieniajacym setup.ps1.
-$SCRIPT_BUILD = "F49-20261117"
+$SCRIPT_BUILD = "F50-20261117"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
@@ -3531,11 +3531,21 @@ function Install-VmAutostart {
         Write-Log "  $vboxUserHome\VirtualBox.xml (czy istnieje)" -Level "WARN"
     }
 
-    # Dodatkowo: VBoxManage setproperty + autostart VBox wlasnym mechanizmem
-    # (dziala gdy VM ma wlaczony autostart w VirtualBox Manager).
-    $null = & $vbox modifyvm $VmName --autostart-enabled on --autostart-delay 30 2>&1
-    if ($LASTEXITCODE -eq 0) {
+    # Dodatkowo: autostart VBox wlasnym mechanizmem - TYLKO przy zatrzymanej VM.
+    # Fala 48e (dowod RUN 11: FATAL "already locked for a session" po weryfikacji
+    # autostartu): modifyvm przy DZIALAJACEJ VM wypisuje stderr; przy globalnym
+    # EAP='Stop' to TerminatingError ubijajac caly ETAP 8 (regula 4 ze skilla).
+    # schtasks (START - ONSTART) pelni role autostartu; to tylko dodatek,
+    # ktory nie moze miec wladzy w skali zycia i smierci instalacji.
+    $prevEapBox = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $asOut = & $vbox modifyvm $VmName --autostart-enabled on --autostart-delay 30 2>&1
+    $asRc = $LASTEXITCODE
+    $ErrorActionPreference = $prevEapBox
+    if ($asRc -eq 0) {
         Write-Check "Autostart VM: VirtualBox autostart-enabled on (delay 30s)"
+    } else {
+        Write-Log "Autostart VM: modifyvm --autostart-enabled pominiety (rc=$asRc; VM dziala) - schtasks covers autostart"
     }
 
     return $true
