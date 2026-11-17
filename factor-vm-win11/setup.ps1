@@ -73,7 +73,7 @@ $SCRIPT_VERSION = "1.0"
 # instalatora byla uzyta. Bez tego kazdy log wygladal identycznie i nie dalo
 # sie powiedziec "czy to regresja, czy inny run".
 # UWAGA: aktualizuj przy kazdym commicie zmieniajacym setup.ps1.
-$SCRIPT_BUILD = "F48-20261117"
+$SCRIPT_BUILD = "F49-20261117"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
@@ -3452,16 +3452,46 @@ function Install-VmAutostart {
 
     $taskName = "STRUCTURA-VM-Autostart"
 
-    # cmd /c potrzebne, zeby ustawic VBOX_USER_HOME TYLKO dla tego polecenia.
-    # Cudzyslowy wokol sciezek sa konieczne - zawieraja spacje.
-    $scriptCmd = "cmd /c `"set VBOX_USER_HOME=$vboxUserHome&& `"`"$vboxDir\VBoxManage.exe`"`" startvm `"`"$VmName`"`" --type headless`""
+    # Fala 48e: POMOCNICZY .cmd zamiast dlugiego /TR (schtasks ogranicza dlugosc
+    # polecenia; dwa wywolania VBoxManage + sciezki przekraczaja limit). Kolejnosc:
+    #   1. sharedfolder add BEZ --transient - zadanie biegnie przy ZATRZYMANEJ VM
+    #      (write lock wolny), wiec rejestracja TRWALA udaje sie; przy juz
+    #      istniejacym udziale blad w batchu nic nepszuje (osobne linie).
+    #      Bez tego udzial z Install-SharedFolder (VM running => --transient)
+    #      GINIE przy pierwszym restarcie - klient traci AI_Workspace.
+    #   2. startvm - osobna linia, MUSI ruszyc zawsze (nie gated na 1.).
+    # VBOX_USER_HOME ustawiane w pliku: SYSTEM nie dziedziczy zmiennych
+    # uzytkownika ("Autostart NIE DZIALAL" - blok KRYTYCZNE powyzej).
+    $starterPath = "C:\STRUCTURA\start-vm.cmd"
+    $null = New-Item -ItemType Directory -Path (Split-Path $starterPath -Parent) -Force
+    $starterLines = @(
+        '@echo off',
+        "set VBOX_USER_HOME=$vboxUserHome",
+        "`"$vboxDir\VBoxManage.exe`" sharedfolder add `"$VmName`" --name=AI_Workspace --hostpath=`"C:\AI_Workspace`" --automount --auto-mount-point=/opt/structura/ai-workspace",
+        "`"$vboxDir\VBoxManage.exe`" startvm `"$VmName`" --type headless"
+    ) -join "`r`n"
+    [System.IO.File]::WriteAllText($starterPath, $starterLines + "`r`n", [System.Text.Encoding]::ASCII)
+    Write-Log "Autostart VM: starter $starterPath (TRWALY sharedfolder add + startvm, VBOX_USER_HOME w pliku)"
 
-    # Usun poprzednie zadanie (idempotencja przy re-runie)
+    $scriptCmd = "cmd /c `"`"$starterPath`"`""
+
+    # Usun poprzedne zadanie (idempotencja przy re-runie).
+    # Fala 48e: EAP=Continue (przy PIERWSZYM runie zadania nie ma i schtasks
+    # /Delete wypisuje blad na stderr; przy globalnym 'Stop' to TerminatingError
+    # ubijajac caly ETAP 8 (ta sama klasa co VBoxManage, regula 4 ze skilla).
+    $prevEapTask = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     $null = & schtasks /Delete /TN $taskName /F 2>&1
+    $ErrorActionPreference = $prevEapTask
 
-    # Trigger ONSTART + SYSTEM (bez logowania) + 30 s opoznienia
+    # Trigger ONSTART + SYSTEM (bez logowania) + 30 s opoznienia.
+    # Fala 48e: EAP=Continue jak wyzej - stderr schtasks nie moze ubic ETAPu 8.
+    $prevEapCreate = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     $createOut = & schtasks /Create /TN $taskName /TR $scriptCmd /SC ONSTART /RU SYSTEM /RL HIGHEST /DELAY 0000:30 /F 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $createRc = $LASTEXITCODE
+    $ErrorActionPreference = $prevEapCreate
+    if ($createRc -ne 0) {
         Write-Check "Autostart VM: nie udalo sie utworzyc zadania ($createOut)" -Warn
         return $false
     }
@@ -3479,7 +3509,10 @@ function Install-VmAutostart {
     # UWAGA: w trakcie instalacji VM zwykle JUZ dziala - wtedy test jest
     # niemiarodajny ("dziala, bo juz chodzila"). Dlatego najpierw sprawdzamy
     # stan, a wynik testu traktujemy jako sygnal, nie dowod.
+    $prevEapRun = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     $null = & schtasks /Run /TN $taskName 2>&1
+    $ErrorActionPreference = $prevEapRun
     Start-Sleep -Seconds 8
 
     $runningAsSystem = $false
@@ -3561,57 +3594,57 @@ function Install-SharedFolder {
     }
 
     # Rejestracja udzialu w VirtualBox z automount
-    # --automount: montuje sie automatycznie przy starcie VM
-    #       (bez tego trzeba recznie 'mount -t vboxsf' po kazdym restarcie)
     # ------------------------------------------------------------------
-    # KRYTYCZNE: 'sharedfolder add' dziala TYLKO przy WYLACZONEJ VM.
-    # Przy dzialajacej polecenie milczaco zawodzi (i zwraca 0), a montaz
-    # nigdy nie powstaje. Sprawdzone na zywej VM: VBoxControl raportowal
-    # "No Shared Folders available", a katalog byl zwyklym ext4 zamiast
-    # vboxsf - czyli VM i Windows NIE dzielily plikow wcale.
-    #
-    # Dlatego: rozgalezienie po stanie VM.
-    #   dziala -> 'controlvm sharedfolder add' (bez restartu VM)
-    #   stoi   -> 'modifyvm --sharedfolder add'
+    # Fala 48e (dowod RUN 10 na zywej VM, VBox 7.1.16 r172425):
+    # - 'controlvm <vm> sharedfolder ...' -> "Invalid parameter 'sharedfolder'"
+    #   (podkomenda NIE ISTNIEJE w 7.1.16; usage jej nie zawiera),
+    # - 'sharedfolder add' bez --transient przy dzialajacej VM ->
+    #   VBOX_E_INVALID_OBJECT_STATE 0x80bb0007 ("already locked for a session")
+    #   = trwala rejestracja wymaga ZATRZYMANEJ VM,
+    # - 'sharedfolder list <vm>' -> "Unknown subcommand: list" (samo add/remove/modify
+    #   istnieje) => weryfikacja WYLACZNIE przez 'showvminfo --machinereadable'.
+    # - stderr od VBoxManage + $ErrorActionPreference='Stop' = TerminatingError
+    #   ubijajacy caly ETAP 8 (regula 4 ze skilla), dlatego caly blok biegnie przy
+    #   EAP='Continue', a wyjscia bledow czytamy wprost przez 2>&1.
+    # Trwalosc: przy dzialajacej VM dajemy --transient (dziala od razu, ginie przy
+    # restarcie); wpis trwaly robi install-VmAutostart przy KAZDYM starcie
+    # Windowsa (VM wtedy stoi) PRZED startvm - patrz tamzejszy komentarz.
     # ------------------------------------------------------------------
-    $vmRunning = (& $vbox list runningvms 2>&1 | Out-String) -match [regex]::Escape("`"$VmName`"")
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $registered = $false
+    $addOut = ""
+    $regMode = ""
+    try {
+        $vmRunning = (& $vbox list runningvms 2>&1 | Out-String) -match [regex]::Escape("`"$VmName`"")
 
-    if ($vmRunning) {
-        # VM DZIALA: 'modifyvm --sharedfolder' jest ignorowane (milczaco, exit 0).
-        # Uzywamy 'controlvm sharedfolder add <name> --hostpath ...' - udzial
-        # jest PRZEJSCIOWY (transient): dziala od razu, a po restarcie VM
-        # odtwarza go wpis w /etc/fstab (montowanie vboxsf) + rejestracja
-        # stala przy kolejnym uruchomieniu instalatora z zatrzymana VM.
-        # Dlatego NIE przerywamy instalacji, gdy VM chodzi.
-        $null = & $vbox controlvm $VmName sharedfolder remove "ai-workspace" 2>&1
-        $null = & $vbox controlvm $VmName sharedfolder remove $ShareName 2>&1
-        $addOut = & $vbox controlvm $VmName sharedfolder add $ShareName `
-            --hostpath "$hostFolder" --automount --auto-mount-point $MountPoint 2>&1
-        $regMode = "controlvm (VM dziala - udzial przejsciowy)"
-    } else {
-        # VM ZATRZYMANA: rejestracja na stale.
-        $null = & $vbox modifyvm $VmName --sharedfolder remove "ai-workspace" 2>&1
-        $null = & $vbox modifyvm $VmName --sharedfolder remove $ShareName 2>&1
-        $addOut = & $vbox modifyvm $VmName --sharedfolder add $ShareName `
-            --hostpath "$hostFolder" --automount --auto-mount-point $MountPoint 2>&1
-        $regMode = "modifyvm (VM zatrzymana)"
-        # Fallback: nie kazda wersja VBox zna 'modifyvm --sharedfolder'.
-        # Klasyczna forma 'sharedfolder add --name' dziala przy zatrzymanej VM.
-        if ($LASTEXITCODE -ne 0) {
-            $addOut = & $vbox sharedfolder add $VmName `
-                --name $ShareName --hostpath "$hostFolder" --automount --auto-mount-point $MountPoint 2>&1
-            $regMode = "sharedfolder add --name $ShareName (VM zatrzymana)"
+        # Porzadki: usuwamy obie formy (trwala + przejsciowa). Brak udzialu przy
+        # pierwszym runie = normalny stan; stderr nie ubija przy EAP=Continue.
+        $null = & $vbox sharedfolder remove $VmName --name=$ShareName 2>&1
+        $null = & $vbox sharedfolder remove $VmName --name=$ShareName --transient 2>&1
+
+        if ($vmRunning) {
+            $addOut = & $vbox sharedfolder add $VmName --name=$ShareName `
+                --hostpath="$hostFolder" --automount --auto-mount-point=$MountPoint --transient 2>&1
+            $regMode = "sharedfolder --transient (VM dziala; trwala rejestracja przy nastepnym starcie autostartu)"
+        } else {
+            $addOut = & $vbox sharedfolder add $VmName --name=$ShareName `
+                --hostpath="$hostFolder" --automount --auto-mount-point=$MountPoint 2>&1
+            $regMode = "sharedfolder (VM zatrzymana - trwaly)"
         }
-    }
 
-    # WERYFIKACJA: samo $LASTEXITCODE nie wystarcza (patrz wyzej) - pytamy
-    # VirtualBox, czy udzial NAPRAWDE jest zarejestrowany.
-    Start-Sleep -Seconds 2
-    $listOut = & $vbox sharedfolder list $VmName 2>&1 | Out-String
-    if ($listOut -notmatch [regex]::Escape($ShareName)) {
+        # WERYFIKACJA: showvminfo --machinereadable (not 'sharedfolder list' -
+        # nie istnieje w 7.1.16).
+        Start-Sleep -Seconds 2
+        $listOut = (& $vbox showvminfo $VmName --machinereadable 2>&1 | Out-String)
+        $registered = $listOut -match [regex]::Escape($ShareName)
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    if (-not $registered) {
         Write-Check "Folder wspoldzielony: rejestracja NIEUDANA ($regMode)" -Warn
         Write-Log "SharedFolder not registered. add: $addOut"
-        Write-Host "      Recznie: VBoxManage controlvm $VmName sharedfolder add $ShareName --hostpath `"$hostFolder`" --automount --auto-mount-point $MountPoint" -ForegroundColor Yellow
+        Write-Host "      Recznie: VBoxManage sharedfolder add $VmName --name=$ShareName --hostpath `"$hostFolder`" --automount --auto-mount-point $MountPoint" -ForegroundColor Yellow
         return $false
     }
     Write-Log "SharedFolder zarejestrowany przez $regMode"
@@ -3720,7 +3753,7 @@ function Invoke-PostSetup {
     # uzytkownikowi gotowy plik + instrukcje.
     Write-Host "  Sprawdzanie Duplicati (backup konfiguruje uzytkownik recznie)..." -ForegroundColor White
     $duplicatiCmd = @"
-        if docker ps --format '{{.Names}}' | grep -q '^structura-duplicati$'; then
+        if docker ps --format '{{.Names}}' | grep -q -E '^(duplicati|structura-duplicati)$'; then
             echo "DUPLICATI_UP"
         else
             echo "DUPLICATI_DOWN"

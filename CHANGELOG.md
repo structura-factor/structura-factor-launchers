@@ -113,3 +113,27 @@ key NIGDY nie był wstrzykiwany do stack .env).
   dostaje jawny WARN "pamieć 401 aż do konfiguracji klienta" — jak dotąd instalacja
   pozostaje nieblokowana.
 - Build ID: F47-20261117 → F48-20261117.
+
+### 48e — setup.ps1: ETAP 8 host-side na VBox 7.1.16 (run-side share + autostart)
+
+- Dowód RUN 10 (11:07): "Konfigurowanie wspólnego folderu AI_Workspace..." → FATAL —
+  pierwszy żywy ETAP 8 host-side (zamrożony od STAN-2026-09-25, nigdy nie weryfikowany
+  na VBox 7.1.16). Trzy usterki w Install-SharedFolder / Install-VmAutostart (ETAP 8 —
+  status ZMIENIONY od Fala 43, czeka re-weryfikację + orchestrator re-freeze):
+  1. `controlvm <vm> sharedfolder ...` — podkomenda NIE istnieje w 7.1.16 ("Invalid
+     parameter 'sharedfolder'"); trwała rejestracja na działającej VM —
+     VBOX_E_INVALID_OBJECT_STATE (0x80bb0007, write lock). Żywa forma (sonda
+     empiryczna: add + remove OK na działającej VM): `sharedfolder add --transient`.
+  2. `sharedfolder list <vm>` — "Unknown subcommand: list"; weryfikacja przez
+     `showvminfo --machinereadable` (linia SharedFolderNameTransientMapping).
+  3. stderr VBoxManage/schtasks przy globalnym EAP='Stop' → TerminatingError ubijający
+     cały ETAP 8 (reguła 4 ze skilla). Blok VBox i schtasks /Delete//Create//Run
+     biegną teraz przy EAP='Continue' (try/finally); brak udziału na stderr = normalny stan.
+- Trwałość AI_Workspace domknięta: Install-SharedFolder przy vmRunning → --transient
+  (ginie przy restarcie), natomiast autostart task generuje C:\STRUCTURA\start-vm.cmd
+  (ASCII + CRLF): trwałe `sharedfolder add` przy VM ZATRZYMANEJ (write lock wolny) +
+  startvm; VBOX_USER_HOME w pliku (SYSTEM nie dziedziczy env); /TR krótki (limit
+  długości schtasks). fstab (nofail, uid=1000) montuje udział przy każdym starcie VM.
+- Duplicati-check: grep łapał 'structura-duplicati', kontener nazywa się 'duplicati'
+  (compose container_name) → fałszywy WARN przy zdrowym kontenerze; obie nazwy akceptowane.
+- Build: F48-20261117 → F49-20261117.
