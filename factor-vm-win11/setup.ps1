@@ -73,7 +73,7 @@ $SCRIPT_VERSION = "1.0"
 # instalatora byla uzyta. Bez tego kazdy log wygladal identycznie i nie dalo
 # sie powiedziec "czy to regresja, czy inny run".
 # UWAGA: aktualizuj przy kazdym commicie zmieniajacym setup.ps1.
-$SCRIPT_BUILD = "F52-20261117"
+$SCRIPT_BUILD = "F53-20261117"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
@@ -2419,6 +2419,12 @@ function Invoke-ContainerDeployment {
             chmod 600 "`$CORE_DIR/.env"
             echo "ENV_OLLAMA_LLM_KEYS_SET"
         fi
+        # Fala 52e: kept/restored .env moze miec klucze z poprzedniego runa - bez
+        # tego markera PS-side WARN "bez klucza" byl mylacy (dowod RUN 14:
+        # keyless re-run drukowal WARN mimo kluczy w utrzymanym .env).
+        if grep -q '^HINDSIGHT_LLM_API_KEY=[A-Za-z0-9]' "`$CORE_DIR/.env" 2>/dev/null; then
+            echo "HINDSIGHT_LLM_KEYS_PRESENT"
+        fi
 
         # --- Kopia .env do katalogu objetego backupem ---
         # .env lezy w repos/ (poza appdata), wiec NIE byl w zadnym jobie
@@ -2449,6 +2455,8 @@ function Invoke-ContainerDeployment {
         }
         if ($envResult -match 'ENV_OLLAMA_LLM_KEYS_SET') {
             Write-Check "LLM Hindsight: klucz ollama-cloud w stack .env (retain/reflect/consolidation/default)"
+        } elseif ($envResult -match 'HINDSIGHT_LLM_KEYS_PRESENT') {
+            Write-Check "LLM Hindsight: klucze w stack .env z poprzedniego runa (kept)"
         } elseif (-not $ollamaKeyEnv) {
             Write-Check "LLM Hindsight: bez klucza ollama w stack .env - pamiec 401 az do konfiguracji" -Warn
         }

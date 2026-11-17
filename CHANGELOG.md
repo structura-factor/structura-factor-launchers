@@ -167,3 +167,10 @@ key NIGDY nie był wstrzykiwany do stack .env).
   Fix: prompt tylko gdy `-not [Console]::IsOutputRedirected`; run nie-interaktywny
   dostaje jawny WARN "nie podany - podasz go w wywiadzie" i jedzie dalej.
 - Build: F51-20261117 → F52-20261117.
+
+### 52e — setup.ps1 (ETAP 6/env): uczciwy raport kluczy LLM przy kept .env
+
+- Dowód RUN 14: keyless RE-RUN drukował WARN "bez klucza ollama w stack .env" mimo
+  że klucze LIVE w kept .env (z runa z kluczem). Marker `HINDSIGHT_LLM_KEYS_PRESENT`
+  (grep nie-placeholder key w .env) → PS-side branch "klucze w stack .env z
+  poprzedniego runa (kept)". Build F52-20261117 → F53-20261117.
