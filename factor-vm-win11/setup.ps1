@@ -73,7 +73,7 @@ $SCRIPT_VERSION = "1.0"
 # instalatora byla uzyta. Bez tego kazdy log wygladal identycznie i nie dalo
 # sie powiedziec "czy to regresja, czy inny run".
 # UWAGA: aktualizuj przy kazdym commicie zmieniajacym setup.ps1.
-$SCRIPT_BUILD = "F46-20261117"
+$SCRIPT_BUILD = "F47-20261117"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
@@ -2600,11 +2600,16 @@ function Invoke-ContainerDeployment {
             # kolejny blok i statusy siekle sie jedno pod drugim.
             # Teraz mierzymy wiersz, na ktorym zaczelismy tabele i wracamy
             # kursorem na te sama pozycje - tablica jest stabilna w miejscu.
+            # UWAGA Fala 47 (dowod RUN 7, transcript "PS>TerminatingError: Nieprawidlowe
+            # dojscie"): przy stdout przekierowanym do pliku (run nie-interaktywny)
+            # [Console]::CursorTop rzuca handle invalid i UBIEGAL caly run zaraz po
+            # "Containers deployed". Teraz czytamy w try/catch; bez konsoli
+            # (-1) cale pozycjonowanie jest pomijane, tabela drukuje sie linearnie.
             if ($script:healthTableTop -eq $null) {
-                $script:healthTableTop = [Console]::CursorTop
+                try { $script:healthTableTop = [Console]::CursorTop } catch { $script:healthTableTop = -1 }
             }
             try {
-                [Console]::SetCursorPosition(0, $script:healthTableTop)
+                if ($script:healthTableTop -ge 0) { [Console]::SetCursorPosition(0, $script:healthTableTop) }
             } catch {
                 # Brak konsoli interaktywnej (przekierowanie) - bez pozycjonowania
             }
