@@ -46,3 +46,22 @@ Dowody: C:\STRUCTURA\logs (setup.log, install-console.log) + /opt/data/factor-un
 - Ollama key testowy ląduje na CiemPincie w C:\STRUCTURA\klucze\ollama.key (0600 — Windows ACL per user).
 - Runy: detached start /b NIE działa (Read-Host wisie); działający mechanizm: foreground powershell
   w sesji ssh z EOF-stdin (printf '' | ssh ...) → Read-Host zwraca pusty string → defaulty.
+
+## Fala 46 (2026-11-17) — RUN 6 post-mortem + wyciek klucza w logu
+
+Kontekst: RUN 6 (02:43-03:47) padł w ETAP 3 (45 min "Permission denied"); autopsja sesji B:
+gość KVM/TSC zamrożony (VBox.log DELTA=0 przy VMState=running; "TM: Giving up catch-up attempt
+at a 149 s lag"). RUN 7 na tych samych skryptach z -VM_CPU 6 przeszedł ETAP 3 normalnie →
+awaria środowiskowa (2 vCPU + KVM-paravirt TSC na CiemPincie), nie regresja skryptu.
+
+### 46b — bootstrap: redakcja klucza w linii "Arguments:" (BEZPIECZEŃSTWO)
+- Do tego czasu `***` dotyczyło TYLKO linii "Setup command:" — linia `Arguments: -Client base ...
+  -OllamaApiKey <JAWNY KLUCZ>` lądowała w console logu runu testowego (dowód:
+  install-console-r6.log, [INFO] Arguments). Teraz: `$argsForLog = $setupArgs -join ' '`;
+  przy niepustym `$OllamaApiKey` → `-replace [regex]::Escape($OllamaApiKey), '***'`.
+- Piny po Fali 46: Test@947efd0 → Install@e07b58e → bootstrap@c15db33 → setup@330f7a8
+  (CDN zweryfikowany 4/4 byte-identyczne).
+
+### 46a — setup.ps1: bump build ID F43-20261116 → F46-20261117
+- Reguła "build ID w logu": banner nie był podbijany mimo zmian Fala 44c/44d w setup.ps1 —
+  log runów wyglądał identycznie mimo innych skryptów.
