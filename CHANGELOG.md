@@ -65,3 +65,51 @@ awaria środowiskowa (2 vCPU + KVM-paravirt TSC na CiemPincie), nie regresja skr
 ### 46a — setup.ps1: bump build ID F43-20261116 → F46-20261117
 - Reguła "build ID w logu": banner nie był podbijany mimo zmian Fala 44c/44d w setup.ps1 —
   log runów wyglądał identycznie mimo innych skryptów.
+
+## Fala 47 (2026-11-17) — RUN 7: "Containers deployed", potem dwie klasa crashy
+
+Kontekst: RUN 7 (05:15-05:41, VM 9e022fb7, 6 vCPU/8 GB): ETAPy 3-5 PASS, ETAP 6 core PASS
+("Containers deployed", 8 kontenerów + runner healthy; core Fala 45 @684e92d verified e2e).
+Po tym run padł na DWIE usterki (fixy ponizej); sesja wyczerpała wtedy budżet iteracji.
+
+### 47 — setup.ps1: health-table [Console]::CursorTop w try/catch
+- Dowód: transcript RUN 7, "PS>TerminatingError: Nieprawidlowe dojscie" tuż po
+  "Waiting for containers to be healthy..." — przy stdout przekierowanym (run
+  nie-interaktywny) odczyt pozycji kursora rzuca "handle invalid" i UBIA cały run
+  zaraz po deployu kontenerów. Fix: try/catch + pomijanie pozycjonowania przy braku
+  konsoli (tabela drukuje się linearnie). Build F47-20261117.
+### 47b/c/d — re-piny
+- setup@d892aa7 → bootstrap@587122369b → Install@2299456 → Test@72258fb.
+
+## Fala 48 (2026-11-17) — RUN 8 post-mortem: nadpisywanie .env przy re-runie + klucz LLM Hindsight
+
+Kontekst: RUN 8 (05:48-05:50, runner run-f47b: setup @d892aa7 na ISTNIEJĄCEJ VM, stdin-EOF
+→ defaulty = menu "istniejąca"): ETAPy 1-3 w ~2 min, ETAP 6: `make deploy` FAIL w ~60 s.
+Dowód: setup.log [INFO] DEPLOY_FAILED rc=2 + diag — n8n "Mismatching encryption keys"
+(N8N_ENCRYPTION_KEY z REGENEROWANEGO .env != klucz w /home/node/.n8n/config z wolumenu
+RUN 7) → dependency failed → abort; Duplicati SettingsEncryptionKeyMismatch (ta sama
+klasa); hindsight LLM HTTP 401 (compose fallback API_KEY="ollama" przy ollama.com/v1 —
+key NIGDY nie był wstrzykiwany do stack .env).
+
+### 48 — setup.ps1 (Invoke-ContainerDeployment, blok env): .env idempotentny (kept/restore/template)
+- Wcześniej: `cp .env.example → .env` nadpisywał .env na KAŻDYM runie; backup do
+  /opt/structura/config/.env szedł PRZED generate-secrets (backup = surowy szablon!);
+  generate-secrets wyrzucał ŚWIEŻE sekrety nad danymi wolumenów → n8n/duplicati
+  restart-loops (pitfall 18 ze skilla, teraz z żywym dowodem RUN 8).
+- Teraz: kept (live .env z poprzedniego runa) → restore z config/.env →
+  template+generate-secrets wyłącznie przy pierwszym starcie. generate-secrets biegnie
+  dalej zawsze (idempotentny — nadpisuje tylko placeholdery). Backup idzie
+  PO sekretach i PO wstrzyknięciu klucza LLM; markery CONFIG_ENV_BACKED_UP /
+  CONFIG_ENV_BACKUP_FAILED; PS-side fail-check na BACKUP_FAILED.
+- Uwaga zakresowa: zmiana leży w Invoke-ContainerDeployment (ETAP 6) — etap i tak
+  status ZMIENIONY (Fala 43/47), czeka re-weryfikację na żywej VM + re-freeze orchestratora.
+
+### 48b — setup.ps1 (Invoke-ContainerDeployment, blok env): klucz ollama-cloud → plane LLM Hindsight
+- Compose czyta HINDSIGHT_{,RETAIN,CONSOLIDATION,REFLECT}_LLM_API_KEY z .env; bez wpisów
+  fallback = literal "ollama" przy https://ollama.com/v1 → HTTP 401 przy każdym retain
+  (pamięć martwa "od pudełka"). Teraz: przy -OllamaApiKey (run testowy) klucz wchodzi
+  do stack .env (4 role), walidacja znaków jak w ETAP 7, wartość NIE logowana, wpis
+  idempotentny (re-run: sed nadpisuje tą samą wartością). Wariant kliencki (bez klucza)
+  dostaje jawny WARN "pamieć 401 aż do konfiguracji klienta" — jak dotąd instalacja
+  pozostaje nieblokowana.
+- Build ID: F47-20261117 → F48-20261117.

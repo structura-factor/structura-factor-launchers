@@ -73,7 +73,7 @@ $SCRIPT_VERSION = "1.0"
 # instalatora byla uzyta. Bez tego kazdy log wygladal identycznie i nie dalo
 # sie powiedziec "czy to regresja, czy inny run".
 # UWAGA: aktualizuj przy kazdym commicie zmieniajacym setup.ps1.
-$SCRIPT_BUILD = "F47-20261117"
+$SCRIPT_BUILD = "F48-20261117"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
@@ -2348,43 +2348,85 @@ function Invoke-ContainerDeployment {
     $sshTarget = "structura@$VmIp"
     $sshPort = 2222
 
-    # Prepare .env from profile template (klient: repo klienta, base: profiles/base)
-    Write-Host "  Preparing .env from profile template..." -ForegroundColor White
+    # Fala 48 (dowod RUN 8: n8n "Mismatching encryption keys" + Duplicati
+    # SettingsEncryptionKeyMismatch przy re-runie na istniejacej VM):
+    # .env z poprzedniego runa MUSI przetrwac. Wczesniej ten blok przy KAZDYM
+    # runie nadpisywal .env szablonem i generowal SWIEZE sekrety nad danymi
+    # wolumenow (n8n/duplicati szyfruja kluczem z pierwszego startu) =>
+    # kontenery restart-loopy i make deploy padal w ~60 s.
+    # Kolejnosc teraz: kept (plik live) -> restore z backupu -> template.
+    if (-not $OllamaApiKey -or $OllamaApiKey -notmatch '^[A-Za-z0-9._\-]+$') { $ollamaKeyEnv = "" } else { $ollamaKeyEnv = $OllamaApiKey }
+
+    Write-Host "  Preparing .env (idempotentnie: kept/restore/template)..." -ForegroundColor White
 
     $envCmd = @"
         CLIENT_DIR="$CLIENT_DIR_REMOTE"
         CORE_DIR="$CORE_DIR_REMOTE"
 
-        if [ -f "`$CLIENT_DIR/.env.example" ]; then
-            sudo cp "`$CLIENT_DIR/.env.example" "`$CORE_DIR/.env"
-            echo "env: from profile template (`$CLIENT_DIR)"
+        ENV_SOURCE="fresh"
+        if [ -f "`$CORE_DIR/.env" ]; then
+            ENV_SOURCE="kept"
+        elif [ -f /opt/structura/config/.env ]; then
+            sudo cp /opt/structura/config/.env "`$CORE_DIR/.env"
+            ENV_SOURCE="restored"
+        fi
+        if [ "`$ENV_SOURCE" = "fresh" ]; then
+            if [ -f "`$CLIENT_DIR/.env.example" ]; then
+                sudo cp "`$CLIENT_DIR/.env.example" "`$CORE_DIR/.env"
+                echo "env: from profile template (`$CLIENT_DIR)"
+            else
+                echo "env: WARN - .env.example profilu nie znaleziony, uzywam core"
+                sudo cp "`$CORE_DIR/.env.example" "`$CORE_DIR/.env"
+            fi
         else
-            echo "env: WARN - .env.example profilu nie znaleziony, uzywam core"
-            sudo cp "`$CORE_DIR/.env.example" "`$CORE_DIR/.env"
+            echo "env: .env zachowany/odtworzony z poprzedniego runa (sekrety pasuja do danych)"
         fi
 
         # Wlascicielem musi byc structura - 'make' uruchamia sie jako ten uzytkownik
         # i bez tego nie odczyta .env (root:600 => Permission denied).
         sudo chown structura:structura "`$CORE_DIR/.env"
+        chmod 600 "`$CORE_DIR/.env"
+
+        # Wygeneruj LOKALNE sekrety (Postgres, n8n, NPM, Duplicati, Portainer, SearXNG, SMB).
+        # Bez tego make secrets-check odrzuca placeholdery i deploy nie startuje.
+        # UWAGA Fala 48: skrypt jest idempotentny - nadpisuje WYLACZNIE placeholdery,
+        # prawdziwe sekrety z zachowanego/odtworzonego .env zostaja nietknie.
+        if [ -x "`$CORE_DIR/scripts/generate-secrets.sh" ]; then
+            ( cd "`$CORE_DIR" && ./scripts/generate-secrets.sh .env )
+        else
+            echo "env: WARN - generate-secrets.sh not found"
+        fi
+
+        # Fala 48: klucz ollama-cloud -> plane LLM Hindsight (4 role). Compose czyta
+        # HINDSIGHT ... LLM API KEY ze zmiennych ponizej; bez wpisow fallback to
+        # literal "ollama" przy ollama.com - HTTP 401 przy kazdym retain, pamiec
+        # martwa az do konfiguracji klienta. Wartosc NIE jest logowana; wpis
+        # idempotentny (re-run nadpisuje ta sama wartoscia).
+        if [ -n '$ollamaKeyEnv' ]; then
+            for k in HINDSIGHT_LLM_API_KEY HINDSIGHT_RETAIN_LLM_API_KEY HINDSIGHT_CONSOLIDATION_LLM_API_KEY HINDSIGHT_REFLECT_LLM_API_KEY; do
+                if grep -q "^`${k}=" "`$CORE_DIR/.env"; then
+                    sed -i "s|^`${k}=.*|`${k}=$ollamaKeyEnv|" "`$CORE_DIR/.env"
+                else
+                    printf '%s=%s\n' "`${k}" '$ollamaKeyEnv' >> "`$CORE_DIR/.env"
+                fi
+            done
+            chmod 600 "`$CORE_DIR/.env"
+            echo "ENV_OLLAMA_LLM_KEYS_SET"
+        fi
 
         # --- Kopia .env do katalogu objetego backupem ---
         # .env lezy w repos/ (poza appdata), wiec NIE byl w zadnym jobie
         # Duplicati. A zawiera wszystkie hasla - bez niego odtworzenie bazy
         # z dumpu jest niemozliwe. Kopiujemy do /opt/structura/config/,
         # ktore jest montowane do Duplicati jako /source/config.
-        sudo cp "`$CORE_DIR/.env" /opt/structura/config/.env
-        sudo chmod 600 /opt/structura/config/.env
-        sudo chown root:root /opt/structura/config/.env
-        echo "CONFIG_ENV_BACKED_UP"
-        chmod 600 "`$CORE_DIR/.env"
-
-        # Wygeneruj LOKALNE sekrety (Postgres, n8n, NPM, Duplicati, Portainer, SearXNG, SMB).
-        # Bez tego make secrets-check odrzuca placeholdery i deploy nie startuje.
-        if [ -x "`$CORE_DIR/scripts/generate-secrets.sh" ]; then
-            ( cd "`$CORE_DIR" && ./scripts/generate-secrets.sh .env )
-        else
-            echo "env: WARN - generate-secrets.sh not found"
-        fi
+        # UWAGA Fala 48: backup idzie PO generate-secrets i PO wstrzyknieciu
+        # klucza LLM - wczesniej backupowano SUROWY szablon (bez sekretow).
+        sudo cp "`$CORE_DIR/.env" /opt/structura/config/.env \
+            && echo "CONFIG_ENV_BACKED_UP" \
+            || echo "CONFIG_ENV_BACKUP_FAILED"
+        sudo chmod 600 /opt/structura/config/.env 2>/dev/null || true
+        sudo chown root:root /opt/structura/config/.env 2>/dev/null || true
+        echo "ENV_SOURCE=`$ENV_SOURCE"
 
         # Sekrety zewnetrzne (Anthropic/Telegram/MS365) NIE sa wymagane na tym etapie -
         # klient wybiera providera LLM przy pierwszej konfiguracji Hermesa.
@@ -2392,7 +2434,21 @@ function Invoke-ContainerDeployment {
 "@
     $envResult = (Invoke-SshScript -Script $envCmd -Label "env" -sshTarget $sshTarget -SshPort $sshPort).Output
     if ($envResult -match 'ENV_READY') {
-        Write-Check ".env utworzony, sekrety lokalne wygenerowane (chmod 600)"
+        if ($envResult -match 'ENV_SOURCE=kept') {
+            Write-Check ".env UTRZYMANY z poprzedniego runa (sekrety pasuja do danych wolumenow)"
+        } elseif ($envResult -match 'ENV_SOURCE=restored') {
+            Write-Check ".env odtworzony z backupu /opt/structura/config/.env"
+        } else {
+            Write-Check ".env utworzony z szablonu, sekrety lokalne wygenerowane (chmod 600)"
+        }
+        if ($envResult -match 'ENV_OLLAMA_LLM_KEYS_SET') {
+            Write-Check "LLM Hindsight: klucz ollama-cloud w stack .env (retain/reflect/consolidation/default)"
+        } elseif (-not $ollamaKeyEnv) {
+            Write-Check "LLM Hindsight: bez klucza ollama w stack .env - pamiec 401 az do konfiguracji" -Warn
+        }
+        if ($envResult -match 'CONFIG_ENV_BACKUP_FAILED') {
+            Write-Check "Backup .env do /opt/structura/config/ NIEUDANY - sprawdz log" -Fail
+        }
     } else {
         Write-Check ".env setup problem - sprawdz log" -Warn
     }
