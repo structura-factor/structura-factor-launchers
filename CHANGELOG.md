@@ -150,10 +150,20 @@ key NIGDY nie był wstrzykiwany do stack .env).
 
 - Dowód RUN 12: hindsight unhealthy ("asyncpg InsufficientPrivilegeError: could not open
   file global/pg_filenode.map: Permission denied") mimo zdrowego postgresql-healthcheck.
-  Stan PGDATA: pliki własnością structura (uid 1000), chmod 600 — postgresa nie czyta
+  Stan PGDATA: pliki własnością structura (uid 1000), chmod 600 — postgres nie czyta
   własnych plików. Blok mkdir robił `chown 999:999 PGDATA`, a ZARAZ PO nim
   `chown -R 1000:1000 /opt/structura/appdata` (obejmuje postgresql/data):
   przy pierwszym runie PGDATA nie istnieje (powstaje w ETAP 6) — bez szkody;
   przy KAŻDYM re-runie przejęcie ownera łamie bazę. Fix: kolejność odwrócona
   (1000 na appdata, 999 na PGDATA NA KOŃCU — ostatnie słowo o właścicielu).
 - Build: F50-20261117 → F51-20261117.
+
+### 48h — setup.ps1 (ETAP 7): prompt klucza tylko przy prawdziwej konsoli
+
+- Dowód RUN 14: keyless run (forma klienta: jednoliner pobiera Install z CDN i przez
+  potok uruchamia go, tu po ssh z EOF-stdin) wisiał ~8 min
+  na `Read-Host "OLLAMA_API_KEY" -AsSecureString` — przy przekierowanym stdout
+  SecureString-read nie wraca (ta sama klasa konsoli co Fala 47/CursorTop).
+  Fix: prompt tylko gdy `-not [Console]::IsOutputRedirected`; run nie-interaktywny
+  dostaje jawny WARN "nie podany - podasz go w wywiadzie" i jedzie dalej.
+- Build: F51-20261117 → F52-20261117.

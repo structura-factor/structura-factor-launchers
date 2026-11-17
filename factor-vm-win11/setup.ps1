@@ -73,7 +73,7 @@ $SCRIPT_VERSION = "1.0"
 # instalatora byla uzyta. Bez tego kazdy log wygladal identycznie i nie dalo
 # sie powiedziec "czy to regresja, czy inny run".
 # UWAGA: aktualizuj przy kazdym commicie zmieniajacym setup.ps1.
-$SCRIPT_BUILD = "F51-20261117"
+$SCRIPT_BUILD = "F52-20261117"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
@@ -3120,9 +3120,18 @@ function Install-NativeHermes {
     # pozniej (wywiad instalacyjny / 'hermes setup').
     # Wartosc NIGDY nie trafia na ekran ani do logu; jedyny slad to
     # ~/.hermes/.env (chmod 600) na VM.
+    #
+    # Fala 52 (dowod RUN 14: keyless run przez ssh/EOF-stdin wisia ~8 min na
+    # Read-Host -AsSecureString): prompt TYLKO przy prawdziwej konsoli.
+    # [Console]::IsOutputRedirected = true przy stdout do pliku (runy testowe,
+    # ssh z zamknietym stdin); w takim trybie Read-Host SecureString wisi.
+    # Bez konsoli: pomijamy prompt i zostawiamy jawny WARN (klient daje klucz
+    # przy pierwszej rozmowie lub przesyla go w kanale instalacyjnym).
     # ------------------------------------------------------------------
     $ollamaKey = $OllamaApiKey
-    if (-not $ollamaKey -and -not $Quiet) {
+    $consoleInteractive = $false
+    try { $consoleInteractive = -not [Console]::IsOutputRedirected } catch { $consoleInteractive = $false }
+    if (-not $ollamaKey -and -not $Quiet -and $consoleInteractive) {
         Write-Host ""
         Write-Host "  Klucz API ollama-cloud (model glm-5.3-flash) - opcjonalny." -ForegroundColor White
         Write-Host "  Enter = pomin (podasz go w wywiadzie instalacyjnym)." -ForegroundColor DarkGray
