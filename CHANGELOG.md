@@ -145,3 +145,15 @@ key NIGDY nie był wstrzykiwany do stack .env).
   `modifyvm --autostart-enabled on` przy DZIAŁAJĄCEJ VM → stderr "already locked for a
   session" → globalne EAP='Stop' → TerminatingError. Fix: blok przy EAP='Continue' +
   rc-based JAWNE pomijanie (schtasks pokrywa autostart). Build F50-20261117.
+
+### 48g — setup.ps1 (ETAP 5/mkdir): kolejność chown — PGDATA ostatnie słowo
+
+- Dowód RUN 12: hindsight unhealthy ("asyncpg InsufficientPrivilegeError: could not open
+  file global/pg_filenode.map: Permission denied") mimo zdrowego postgresql-healthcheck.
+  Stan PGDATA: pliki własnością structura (uid 1000), chmod 600 — postgresa nie czyta
+  własnych plików. Blok mkdir robił `chown 999:999 PGDATA`, a ZARAZ PO nim
+  `chown -R 1000:1000 /opt/structura/appdata` (obejmuje postgresql/data):
+  przy pierwszym runie PGDATA nie istnieje (powstaje w ETAP 6) — bez szkody;
+  przy KAŻDYM re-runie przejęcie ownera łamie bazę. Fix: kolejność odwrócona
+  (1000 na appdata, 999 na PGDATA NA KOŃCU — ostatnie słowo o właścicielu).
+- Build: F50-20261117 → F51-20261117.

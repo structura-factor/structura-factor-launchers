@@ -73,7 +73,7 @@ $SCRIPT_VERSION = "1.0"
 # instalatora byla uzyta. Bez tego kazdy log wygladal identycznie i nie dalo
 # sie powiedziec "czy to regresja, czy inny run".
 # UWAGA: aktualizuj przy kazdym commicie zmieniajacym setup.ps1.
-$SCRIPT_BUILD = "F50-20261117"
+$SCRIPT_BUILD = "F51-20261117"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
@@ -2262,10 +2262,16 @@ function Invoke-RepoAndAppdata {
 
         # Wlasciciel PGDATA musi byc postgres (uid 999 w obrazie pgvector).
         # Bez tego entrypoint robi chown i (przy nieoczekiwanym uid) konczy bledem.
+        # UWAGA (Fala 48g, dowod RUN 12 na zywej VM): chown -R 1000:1000 na CALYM
+        # appdata NIE MOZE pojsc PO 999 na PGDATA. Przy pierwszym runie PGDATA
+        # jeszcze nie istnieje (initdb w ETAP 6), ale przy RE-RUNIE pliki bazy
+        # sa juz i przejecie ownera na structura (uid 1000) lamie postgresa
+        # (hindsight: asyncpg InsufficientPrivilegeError 'global/pg_filenode.map').
+        # Kolejnosc finalna: najpierw 1000 na appdata, NA KONCU 999 na PGDATA
+        # (to musi byc OSTATNIE slowo o wlascicielu).
+        sudo chown -R 1000:1000 /opt/structura/appdata
         sudo chown -R 999:999 "`$PGDATA_DIR"
         sudo chmod 700 "`$PGDATA_DIR"
-
-        sudo chown -R 1000:1000 /opt/structura/appdata
         echo "appdata structure created"
 "@
 
@@ -3456,7 +3462,7 @@ function Install-VmAutostart {
     # polecenia; dwa wywolania VBoxManage + sciezki przekraczaja limit). Kolejnosc:
     #   1. sharedfolder add BEZ --transient - zadanie biegnie przy ZATRZYMANEJ VM
     #      (write lock wolny), wiec rejestracja TRWALA udaje sie; przy juz
-    #      istniejacym udziale blad w batchu nic nepszuje (osobne linie).
+    #      istniejacym udziale blad w batchu nic nie psuje (osobne linie).
     #      Bez tego udzial z Install-SharedFolder (VM running => --transient)
     #      GINIE przy pierwszym restarcie - klient traci AI_Workspace.
     #   2. startvm - osobna linia, MUSI ruszyc zawsze (nie gated na 1.).
