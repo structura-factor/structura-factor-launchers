@@ -73,7 +73,7 @@ $SCRIPT_VERSION = "1.0"
 # instalatora byla uzyta. Bez tego kazdy log wygladal identycznie i nie dalo
 # sie powiedziec "czy to regresja, czy inny run".
 # UWAGA: aktualizuj przy kazdym commicie zmieniajacym setup.ps1.
-$SCRIPT_BUILD = "F53-20261117"
+$SCRIPT_BUILD = "F54-20261117"
 $LOG_DIR = "C:\structura"
 $LOG_FILE = "$LOG_DIR\setup.log"
 $VM_NAME = "structura-$Client"
@@ -4415,13 +4415,29 @@ function Install-HostsEntries {
         $newLines += "127.0.0.1`t$d"
     }
 
-    try {
-        Set-Content -Path $hostsPath -Value $newLines -Force -ErrorAction Stop
+    # Fala 54 (dowod RUN 15): hosts bywa chwilowo uzywany przez inny proces
+    # ("Proces nie moze uzyskac dostepu do pliku..." od svchost/DNS cache);
+    # pojedynczy strzal Set-Content wtedy failowal cala liste nazw. Teraz:
+    # 3 proby po 2 s - na PRAWDZIWEj blokadzie trwalej (rzadkie) dalej jest
+    # jawny WARN i instrukcja reczna.
+    $hostsWritten = $false
+    $hostsErr = $null
+    foreach ($attempt in 1..3) {
+        try {
+            Set-Content -Path $hostsPath -Value $newLines -Force -ErrorAction Stop
+            $hostsWritten = $true
+            break
+        } catch {
+            $hostsErr = $_
+            Start-Sleep -Seconds 2
+        }
+    }
+    if ($hostsWritten) {
         Write-Check "Nazwy aplikacji dodane do pliku hosts ($($domains.Count) domen)"
         Write-Log "hosts: dodano $($domains -join ', ') -> 127.0.0.1"
-    } catch {
-        Write-Check "Nie moge zapisac pliku hosts (wymaga uprawnien administratora)" -Warn
-        Write-Log "hosts write failed: $_"
+    } else {
+        Write-Check "Nie moge zapisac pliku hosts (wymaga uprawnien administratora / plik zajety)" -Warn
+        Write-Log "hosts write failed: $hostsErr"
         return $false
     }
 
